@@ -8,6 +8,7 @@
 
 ## 目錄
 
+- [快速開始](#快速開始)
 - [架構總覽](#架構總覽)
 - [流程圖](#流程圖)
 - [目錄結構](#目錄結構)
@@ -21,6 +22,107 @@
 - [基礎設施（維護性 / 擴充性）](#基礎設施維護性--擴充性)
 - [智慧掃描模組 (scanner/)](#智慧掃描模組-scanner)
 - [完整目錄結構](#完整目錄結構)
+
+---
+
+## 快速開始
+
+### 1. 安裝
+
+```bash
+# 安裝 Appium Server
+npm install -g appium
+appium driver install uiautomator2    # Android
+appium driver install xcuitest        # iOS
+
+# 安裝 Python 依賴
+pip install -r requirements.txt
+```
+
+### 2. 設定
+
+編輯 `config/android_caps.json`（或 `ios_caps.json`），填入 App 路徑與裝置名稱：
+
+```json
+{
+    "platformName": "Android",
+    "appium:automationName": "UiAutomator2",
+    "appium:deviceName": "emulator-5554",
+    "appium:app": "/path/to/your/app.apk"
+}
+```
+
+### 3. 執行測試
+
+```bash
+# 啟動 Appium Server
+appium &
+
+# 執行所有測試
+pytest
+
+# 指定平台
+pytest --platform=android
+pytest --platform=ios
+
+# 只跑 smoke 測試
+pytest -m smoke
+```
+
+### 4. 使用 Scanner 智慧掃描
+
+連接模擬器，自動分析頁面元素 → 產生 Page Object + 測試案例 + 測試資料：
+
+```bash
+# 掃描當前頁面
+python -m scanner -o ~/my_tests
+
+# 自動探索多頁面（填值 + 點擊 + 追蹤轉場）
+python -m scanner -o ~/my_tests --explore
+
+# 產出 HTML 報告
+python -m scanner -o ~/my_tests --report
+```
+
+### 5. 使用 Generator 產生專案
+
+從 JSON 規格檔一鍵產生完整測試專案：
+
+```bash
+# 互動模式
+python -m generator -o ~/new_project
+
+# 從 spec 檔案產生
+python -m generator -o ~/new_project --spec app_spec.json
+```
+
+### 6. 常用 Fixture 一覽
+
+在測試中直接透過參數注入使用：
+
+```python
+class TestExample:
+    def test_basic(self, driver):
+        """driver 會自動建立/銷毀"""
+        page = LoginPage(driver)
+        page.login("user", "pass")
+
+    def test_with_tools(self, driver, gesture, device, a11y):
+        """多個 fixture 可同時注入"""
+        gesture.scroll_to_text("設定")        # 手勢操作
+        device.rotate_landscape()              # 裝置控制
+        result = a11y.full_audit()             # 無障礙檢查
+
+    def test_validation(self, driver, page_validator, recovery):
+        """使用頁面驗證與異常恢復"""
+        from core import rule
+        page_validator.add_rules([
+            rule.element_visible(LoginPage.USERNAME),
+            rule.element_clickable(LoginPage.LOGIN_BTN),
+        ])
+        page_validator.assert_all()
+        recovery.try_recover()                 # 手動觸發恢復
+```
 
 ---
 
