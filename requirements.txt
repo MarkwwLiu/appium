@@ -1,0 +1,11 @@
+# Appium 自動化測試框架依賴
+
+# Appium Python Client
+Appium-Python-Client>=4.0.0
+
+# 測試框架
+pytest>=8.0.0
+pytest-html>=4.0.0
+
+# Selenium (Appium 依賴)
+selenium>=4.20.0
