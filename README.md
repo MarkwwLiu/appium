@@ -456,14 +456,153 @@ def test_data_loaded(self, driver):
 
 ---
 
-## 擴充方向
+## 擴充模組（已內建）
 
-當框架使用成熟後，可以往以下方向擴充：
+以下進階功能已全部內建在框架中，可直接使用：
 
-| 方向 | 說明 |
-|------|------|
-| **資料驅動測試** | 搭配 `pytest.mark.parametrize` 或 CSV/JSON 測試資料 |
-| **多裝置平行測試** | 搭配 `pytest-xdist` 在多台裝置上平行執行 |
-| **API + UI 混合測試** | 用 API 建立測試資料，UI 驗證顯示 |
-| **Allure 報告** | 搭配 `allure-pytest` 產生更豐富的測試報告 |
-| **Docker 化** | 將 Appium Server + Android Emulator 容器化 |
+### 1. 資料驅動測試
+
+將測試資料放在 `test_data/` 目錄，支援 JSON 和 CSV 格式：
+
+```python
+from utils.data_loader import load_json, get_test_ids
+
+LOGIN_DATA = load_json("login_data.json")
+
+class TestLoginDataDriven:
+    @pytest.mark.parametrize("data", LOGIN_DATA, ids=get_test_ids(LOGIN_DATA))
+    def test_login(self, driver, data):
+        LoginPage(driver).login(data["username"], data["password"])
+        if data["expected"] == "success":
+            assert HomePage(driver).is_home_page_displayed()
+```
+
+### 2. 自訂 Decorators
+
+```python
+from utils.decorators import android_only, ios_only, retry_on_failure, timer
+
+@android_only                           # 僅 Android 執行
+def test_back_button(self, driver): ...
+
+@ios_only                               # 僅 iOS 執行
+def test_swipe_back(self, driver): ...
+
+@retry_on_failure(max_retries=3)        # 失敗自動重試
+def test_flaky(self, driver): ...
+
+@timer                                  # 印出執行耗時
+def test_perf(self, driver): ...
+```
+
+### 3. API + UI 混合測試
+
+透過 `api_client` fixture 直接使用：
+
+```python
+def test_create_then_verify(self, driver, api_client):
+    # 用 API 建立資料
+    api_client.post("/users", {"name": "mark", "email": "mark@test.com"})
+
+    # 用 UI 驗證顯示
+    home = HomePage(driver)
+    assert "mark" in home.get_welcome_text()
+```
+
+### 4. 測試資料工廠
+
+不再硬編碼，隨機產生有意義的測試資料：
+
+```python
+from utils.data_factory import DataFactory
+
+email = DataFactory.random_email()       # test_abcdef_1234@example.com
+phone = DataFactory.random_phone()       # 0912345678
+pwd   = DataFactory.random_password()    # 含大小寫+數字+符號
+user  = DataFactory.random_username()    # user_abcde_42
+```
+
+### 5. 元素探索工具
+
+開發階段快速定位元素，透過 `element_helper` fixture 使用：
+
+```python
+def test_debug(self, driver, element_helper):
+    element_helper.dump_page("debug.xml")        # 匯出頁面結構
+    element_helper.find_all_ids()                 # 列出所有 resource-id
+    element_helper.find_by_text("登入")           # 搜尋文字元素
+    element_helper.find_clickable_elements()      # 列出所有可點擊元素
+```
+
+### 6. Allure 報告
+
+選裝 `allure-pytest` 後自動啟用，測試失敗時會附加截圖與頁面 XML：
+
+```bash
+pip install allure-pytest
+pytest --alluredir=reports/allure-results
+allure serve reports/allure-results
+```
+
+在 Page Object 中使用 `@allure_step` 標記步驟：
+
+```python
+from utils.allure_helper import allure_step
+
+class LoginPage(BasePage):
+    @allure_step("輸入帳號密碼並登入")
+    def login(self, username, password):
+        self.enter_username(username)
+        self.enter_password(password)
+        self.tap_login()
+```
+
+### 7. GitHub Actions CI/CD
+
+已內建 `.github/workflows/appium-test.yml`，支援：
+
+- **Android**：自動啟動模擬器 + Appium Server + 跑測試
+- **iOS**：在 macOS runner 上啟動 Simulator + 跑測試
+- 自動上傳測試報告與失敗截圖
+- 支援手動觸發並選擇平台
+
+---
+
+## 完整目錄結構
+
+```
+appium/
+├── .github/workflows/
+│   └── appium-test.yml         # CI/CD pipeline
+├── config/
+│   ├── config.py               # 全域設定
+│   ├── android_caps.json       # Android capabilities
+│   └── ios_caps.json           # iOS capabilities
+├── core/
+│   ├── driver_manager.py       # Driver 生命週期
+│   └── base_page.py            # Page Object 基底
+├── pages/
+│   ├── login_page.py           # 登入頁面
+│   └── home_page.py            # 首頁
+├── tests/
+│   ├── test_login.py           # 登入測試
+│   ├── test_home.py            # 首頁測試
+│   ├── test_login_data_driven.py  # 資料驅動測試
+│   └── test_with_decorators.py # Decorator 範例
+├── test_data/
+│   └── login_data.json         # 測試資料
+├── utils/
+│   ├── logger.py               # 日誌
+│   ├── screenshot.py           # 截圖
+│   ├── wait_helper.py          # 等待/重試
+│   ├── data_loader.py          # 資料載入 (JSON/CSV)
+│   ├── data_factory.py         # 隨機測試資料工廠
+│   ├── api_client.py           # REST API 客戶端
+│   ├── decorators.py           # 自訂裝飾器
+│   ├── element_helper.py       # 元素探索工具
+│   └── allure_helper.py        # Allure 報告整合
+├── conftest.py                 # pytest fixtures
+├── pytest.ini
+├── requirements.txt
+└── .gitignore
+```
