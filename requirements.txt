@@ -9,3 +9,21 @@ pytest-html>=4.0.0
 
 # Selenium (Appium 依賴)
 selenium>=4.20.0
+
+# API 混合測試
+requests>=2.31.0
+
+# 多裝置平行測試 (選裝)
+# pip install pytest-xdist
+# pytest-xdist>=3.5.0
+
+# 視覺回歸測試 (選裝)
+# pip install Pillow
+# Pillow>=10.0.0
+
+# Allure 報告 (選裝)
+# pip install allure-pytest
+# allure-pytest>=2.13.0
+
+# Web 測試平台
+nicegui>=2.0.0

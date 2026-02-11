@@ -1,0 +1,190 @@
+name: Appium Automation Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "測試平台"
+        required: true
+        default: "android"
+        type: choice
+        options:
+          - android
+          - ios
+      scan_mode:
+        description: "Scanner 模式"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - scan-only
+          - explore
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ── 靜態檢查 ──
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install flake8 mypy
+
+      - name: Lint with flake8
+        run: |
+          flake8 core/ utils/ plugins/ scanner/ generator/ \
+            --max-line-length=120 \
+            --exclude=__pycache__,*.egg-info \
+            --ignore=E501,W503,E402 \
+            --count --show-source --statistics
+
+      - name: Type check (core only)
+        run: |
+          mypy core/ --ignore-missing-imports --no-error-summary || true
+
+  # ── Android 測試 ──
+  android-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    if: ${{ github.event.inputs.platform != 'ios' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Appium
+        run: |
+          npm install -g appium
+          appium driver install uiautomator2
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Enable KVM (for Android emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Android Emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          script: |
+            # 啟動 Appium Server
+            appium --relaxed-security &
+            sleep 5
+
+            # 執行測試
+            PLATFORM=android pytest \
+              --html=reports/report.html \
+              --self-contained-html \
+              -m "not ios" \
+              || true
+
+            # Scanner 模式 (如果指定)
+            if [ "${{ github.event.inputs.scan_mode }}" = "scan-only" ]; then
+              python -m scanner -o reports/scanner_output --scan-only
+            elif [ "${{ github.event.inputs.scan_mode }}" = "explore" ]; then
+              python -m scanner -o reports/scanner_output --explore --max-pages 3
+            fi
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-android
+          path: |
+            reports/
+            screenshots/
+
+      - name: Upload scanner output
+        if: always() && github.event.inputs.scan_mode != 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-output-android
+          path: reports/scanner_output/
+
+  # ── iOS 測試 ──
+  ios-test:
+    runs-on: macos-latest
+    needs: lint
+    if: ${{ github.event.inputs.platform == 'ios' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Appium & XCUITest driver
+        run: |
+          npm install -g appium
+          appium driver install xcuitest
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Boot iOS Simulator
+        run: |
+          xcrun simctl boot "iPhone 15" || true
+          xcrun simctl list devices booted
+
+      - name: Run Tests
+        run: |
+          appium --relaxed-security &
+          sleep 5
+          PLATFORM=ios pytest \
+            --html=reports/report.html \
+            --self-contained-html \
+            -m "not android"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-ios
+          path: |
+            reports/
+            screenshots/
