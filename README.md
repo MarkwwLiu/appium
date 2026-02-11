@@ -1793,7 +1793,7 @@ python -m web.app
 - 即時 WebSocket 推送測試執行狀態
 - Highcharts 圖表 (通過率、執行時間、Flaky 分數)
 - 團隊認證 + 角色分級 (admin / member / viewer)
-- 與現有 39 個模組無縫整合
+- 與現有模組無縫整合（框架共 40 個模組）
 
 ```mermaid
 flowchart TB
