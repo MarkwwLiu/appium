@@ -81,6 +81,27 @@ def element_helper(driver):
     return ElementHelper(driver)
 
 
+@pytest.fixture
+def gesture(driver):
+    """手勢操作 fixture：長按、雙擊、拖放、縮放、滑動搜尋"""
+    from utils.gesture_helper import GestureHelper
+    return GestureHelper(driver)
+
+
+@pytest.fixture
+def app_manager(driver):
+    """App 生命週期 fixture：安裝/移除/重啟/前背景/deep link"""
+    from utils.app_manager import AppManager
+    return AppManager(driver)
+
+
+@pytest.fixture
+def device(driver):
+    """裝置控制 fixture：旋轉、鍵盤、網路、系統鍵"""
+    from utils.device_helper import DeviceHelper
+    return DeviceHelper(driver)
+
+
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """測試失敗時自動截圖（同時支援本地儲存與 Allure 報告）"""

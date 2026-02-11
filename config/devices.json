@@ -1,0 +1,16 @@
+[
+    {
+        "platformName": "Android",
+        "appium:automationName": "UiAutomator2",
+        "appium:deviceName": "emulator-5554",
+        "appium:app": "/path/to/your/app.apk",
+        "appium:noReset": false
+    },
+    {
+        "platformName": "Android",
+        "appium:automationName": "UiAutomator2",
+        "appium:deviceName": "emulator-5556",
+        "appium:app": "/path/to/your/app.apk",
+        "appium:noReset": false
+    }
+]

@@ -566,6 +566,108 @@ class LoginPage(BasePage):
 - 自動上傳測試報告與失敗截圖
 - 支援手動觸發並選擇平台
 
+### 8. 手勢操作工具
+
+透過 `gesture` fixture 使用進階手勢：
+
+```python
+def test_map_zoom(self, driver, gesture):
+    gesture.long_press(element)                # 長按
+    gesture.double_tap(element)                # 雙擊
+    gesture.drag_and_drop(source, target)      # 拖放
+    gesture.zoom()                             # 雙指放大
+    gesture.pinch()                            # 雙指縮小
+    gesture.scroll_to_text("載入更多")          # 滑動找文字
+    gesture.tap_at(100, 200)                   # 點擊座標
+```
+
+### 9. App 生命週期管理
+
+透過 `app_manager` fixture 控制 App：
+
+```python
+def test_background_resume(self, driver, app_manager):
+    app_manager.background_app(5)              # 背景 5 秒後回前景
+    app_manager.reset_app("com.example.app")   # 強制重啟
+    app_manager.open_deep_link("myapp://page") # Deep Link 跳轉
+    state = app_manager.get_app_state("com.example.app")  # 查狀態
+    app_manager.clear_app_data("com.example.app")         # 清資料
+```
+
+### 10. 裝置控制工具
+
+透過 `device` fixture 操作裝置：
+
+```python
+def test_rotation(self, driver, device):
+    device.rotate_landscape()         # 橫向
+    device.rotate_portrait()          # 直向
+    device.hide_keyboard()            # 隱藏鍵盤
+    device.open_notifications()       # 開通知欄
+    device.set_airplane_mode(True)    # 飛航模式
+    device.set_wifi_only()            # 僅 WiFi
+    device.press_back()               # 返回鍵
+    device.set_clipboard("text")      # 設剪貼簿
+    info = device.get_device_info()   # 裝置資訊
+```
+
+### 11. 效能監控
+
+追蹤 App 的記憶體、CPU、電量：
+
+```python
+from utils.perf_monitor import PerfMonitor
+
+def test_performance(self, driver):
+    monitor = PerfMonitor("com.example.app")
+
+    # 單次檢查
+    snap = monitor.single_check()
+    assert snap.memory_mb < 200
+
+    # 持續監控（需在背景執行緒使用 start/stop）
+    snap = monitor.snapshot()
+    print(f"記憶體: {snap.memory_mb}MB, CPU: {snap.cpu_percent}%")
+```
+
+### 12. Slack / Webhook 通知
+
+測試完成後自動推送結果到 Slack：
+
+```bash
+# 設定環境變數後自動啟用
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx pytest
+```
+
+也可以手動呼叫：
+
+```python
+from utils.notifier import Notifier
+
+notifier = Notifier("https://hooks.slack.com/services/xxx")
+message = notifier.format_test_report(
+    total=50, passed=48, failed=2, skipped=0,
+    duration=120.5, platform="android",
+)
+notifier.send_slack(message)
+```
+
+### 13. 多裝置平行測試
+
+搭配 `pytest-xdist` 在多台裝置上同時跑測試：
+
+```bash
+pip install pytest-xdist
+
+# 設定 config/devices.json（每台裝置一筆）
+# 啟動多個 Appium server（port 4723, 4724, ...）
+appium -p 4723 &
+appium -p 4724 &
+
+# 平行跑測試（2 台裝置）
+pytest -n 2
+```
+
 ---
 
 ## 完整目錄結構
@@ -577,7 +679,8 @@ appium/
 ├── config/
 │   ├── config.py               # 全域設定
 │   ├── android_caps.json       # Android capabilities
-│   └── ios_caps.json           # iOS capabilities
+│   ├── ios_caps.json           # iOS capabilities
+│   └── devices.json            # 多裝置平行測試設定
 ├── core/
 │   ├── driver_manager.py       # Driver 生命週期
 │   └── base_page.py            # Page Object 基底
@@ -600,7 +703,13 @@ appium/
 │   ├── api_client.py           # REST API 客戶端
 │   ├── decorators.py           # 自訂裝飾器
 │   ├── element_helper.py       # 元素探索工具
-│   └── allure_helper.py        # Allure 報告整合
+│   ├── allure_helper.py        # Allure 報告整合
+│   ├── gesture_helper.py       # 手勢操作 (長按/縮放/拖放)
+│   ├── app_manager.py          # App 生命週期管理
+│   ├── device_helper.py        # 裝置控制 (旋轉/網路/鍵盤)
+│   ├── perf_monitor.py         # 效能監控 (CPU/記憶體/電量)
+│   ├── notifier.py             # Slack/Webhook 通知
+│   └── parallel.py             # 多裝置平行測試
 ├── conftest.py                 # pytest fixtures
 ├── pytest.ini
 ├── requirements.txt
