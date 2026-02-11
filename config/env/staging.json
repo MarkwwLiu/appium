@@ -1,0 +1,6 @@
+{
+    "_comment": "Staging 環境",
+    "appium_server": "http://staging-appium:4723",
+    "log_level": "INFO",
+    "retry_count": 3
+}

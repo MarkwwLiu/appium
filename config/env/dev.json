@@ -1,0 +1,4 @@
+{
+    "_comment": "開發環境 — 覆蓋 base 的差異值",
+    "log_level": "DEBUG"
+}

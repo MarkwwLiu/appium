@@ -1,0 +1,11 @@
+{
+    "_comment": "基底設定 — 所有環境共用，差異值在各環境 JSON 覆蓋",
+    "appium_server": "http://127.0.0.1:4723",
+    "platform": "android",
+    "implicit_wait": 10,
+    "explicit_wait": 15,
+    "launch_timeout": 30,
+    "screenshot_on_fail": true,
+    "log_level": "INFO",
+    "retry_count": 2
+}

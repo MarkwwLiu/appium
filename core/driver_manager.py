@@ -1,6 +1,8 @@
 """
 Driver 生命週期管理
+
 負責建立、取得、關閉 Appium driver，確保每個測試 session 獨立。
+已整合 Event Bus 與 Plugin 通知。
 """
 
 from appium import webdriver
@@ -8,6 +10,13 @@ from appium.options.android import UiAutomator2Options
 from appium.options.ios import XCUITestOptions
 
 from config.config import Config
+from core.element_cache import element_cache
+from core.exceptions import (
+    DriverConnectionError,
+    DriverNotInitializedError,
+)
+from core.plugin_manager import plugin_manager
+from utils.logger import logger
 
 
 class DriverManager:
@@ -36,23 +45,36 @@ class DriverManager:
         else:
             raise ValueError(f"不支援的平台: {platform}")
 
-        cls._driver = webdriver.Remote(
-            command_executor=Config.appium_server_url(),
-            options=options,
-        )
+        url = Config.appium_server_url()
+        try:
+            cls._driver = webdriver.Remote(
+                command_executor=url,
+                options=options,
+            )
+        except Exception as e:
+            raise DriverConnectionError(url, e)
+
         cls._driver.implicitly_wait(Config.IMPLICIT_WAIT)
+
+        # 通知 Plugin / Event Bus
+        plugin_manager.emit_driver_created(cls._driver)
+        logger.info(f"Driver 已建立: {platform} -> {url}")
+
         return cls._driver
 
     @classmethod
     def get_driver(cls) -> webdriver.Remote:
         """取得目前的 driver 實例"""
         if cls._driver is None:
-            raise RuntimeError("Driver 尚未建立，請先呼叫 create_driver()")
+            raise DriverNotInitializedError()
         return cls._driver
 
     @classmethod
     def quit_driver(cls) -> None:
         """安全關閉 driver"""
         if cls._driver is not None:
+            plugin_manager.emit_driver_quit(cls._driver)
+            element_cache.clear()
             cls._driver.quit()
             cls._driver = None
+            logger.info("Driver 已關閉")

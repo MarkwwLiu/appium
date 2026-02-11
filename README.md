@@ -21,25 +21,40 @@
 ## 架構總覽
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   pytest 測試層                   │
-│            tests/test_login.py ...               │
-├─────────────────────────────────────────────────┤
-│                Page Object 層                     │
-│     pages/login_page.py, pages/home_page.py      │
-├─────────────────────────────────────────────────┤
-│                   核心層 (core/)                   │
-│     BasePage (通用操作)  │  DriverManager (生命週期)│
-├─────────────────────────────────────────────────┤
-│                  工具層 (utils/)                   │
-│      Logger  │  Screenshot  │  Wait Helper        │
-├─────────────────────────────────────────────────┤
-│                  設定層 (config/)                  │
-│       Config  │  android_caps  │  ios_caps        │
-├─────────────────────────────────────────────────┤
-│              Appium Python Client                 │
-│                  Appium Server                    │
-└─────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                      pytest 測試層                          │
+│          tests/test_login.py ...  (+ markers/parametrize)  │
+├────────────────┬───────────────────────────────────────────┤
+│  Page Object   │  Component (可組合 UI 元件)                │
+│  pages/*.py    │  core/component.py                        │
+├────────────────┴───────────────────────────────────────────┤
+│                  核心基底 (core/)                            │
+│  BasePage   DriverManager   Assertions   EnvManager        │
+├────────────────────────────────────────────────────────────┤
+│           基礎設施 — 可插拔，不改核心即可擴充                  │
+│  ┌──────────────┐ ┌────────────┐ ┌───────────────────┐     │
+│  │ Plugin 系統   │ │ Middleware │ │ Event Bus         │     │
+│  │ plugins/*.py  │ │ 前後攔截    │ │ 發佈/訂閱事件      │     │
+│  └──────────────┘ └────────────┘ └───────────────────┘     │
+│  ┌──────────────┐ ┌────────────┐ ┌───────────────────┐     │
+│  │ Element Cache│ │ Exception  │ │ Env/Config 繼承    │     │
+│  │ 元素快取加速  │ │ 階層體系    │ │ dev/staging/prod  │     │
+│  └──────────────┘ └────────────┘ └───────────────────┘     │
+├────────────────────────────────────────────────────────────┤
+│                    工具層 (utils/)                          │
+│  Logger  Screenshot  Gesture  API  A11y  WebView  ...     │
+├────────────────────────────────────────────────────────────┤
+│               設定層 (config/)                              │
+│  Config  caps.json  env/base.json  env/dev.json  ...      │
+├────────────────────────────────────────────────────────────┤
+│               Appium Python Client + Server                │
+└────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────┐
+│  generator/ — 獨立產生器模組                                │
+│  讀取 AppSpec JSON → 在外部目錄產生完整測試專案              │
+│  (不影響本框架任何程式碼)                                    │
+└────────────────────────────────────────────────────────────┘
 ```
 
 **設計原則：**
@@ -815,6 +830,185 @@ def test_scan_and_verify(self, driver):
 
 ---
 
+## 基礎設施（維護性 / 擴充性）
+
+以下是讓框架「不用一直改核心就能擴充」的底層機制：
+
+### 21. Plugin 系統 — 可插拔擴充
+
+自訂功能放在 `plugins/` 目錄，框架啟動時自動載入，不改核心程式碼：
+
+```python
+# plugins/my_plugin.py
+from core import Plugin
+
+class MyPlugin(Plugin):
+    name = "my_plugin"
+    version = "1.0.0"
+
+    def on_test_fail(self, test_name, driver, error):
+        """測試失敗時做什麼"""
+        driver.save_screenshot(f"/tmp/{test_name}.png")
+        # 推 Slack、寫 DB、任何事...
+
+    def on_before_action(self, page, action, locator, **kwargs):
+        """每個 Page 操作前"""
+        print(f"即將執行: {action} on {locator}")
+```
+
+內建 Plugin：`retry_plugin`（自動重試）、`timing_plugin`（耗時追蹤）、`fail_handler_plugin`（失敗現場保全）。
+
+### 22. Event Bus — 事件發佈/訂閱
+
+模組間不用互相 import，透過事件解耦：
+
+```python
+from core import event_bus
+
+@event_bus.on("test.fail")
+def on_fail(event):
+    print(f"測試失敗: {event.data['test_name']}")
+
+@event_bus.on("page.*")    # 萬用字元：所有 page 事件
+def on_page_event(event):
+    print(f"{event.name}: {event.data}")
+
+# 內建事件：
+# driver.created, driver.quit
+# page.action.before, page.action.after, page.action.error
+# test.start, test.pass, test.fail, test.skip
+# screenshot.taken
+```
+
+### 23. Middleware — Page 操作前後攔截
+
+類似 Express.js 的 middleware 概念，每個 click / input 都經過 middleware 鏈：
+
+```python
+from core import middleware_chain
+
+@middleware_chain.use
+def log_all_actions(context, next_fn):
+    print(f"開始: {context.action}")
+    result = next_fn()          # 呼叫下一層
+    print(f"完成: {context.action}")
+    return result
+
+# 有條件的 middleware（只對 click 生效）
+@middleware_chain.use_if(lambda ctx: ctx.action == "click")
+def click_wait(context, next_fn):
+    import time; time.sleep(0.3)   # click 前等 0.3s
+    return next_fn()
+```
+
+### 24. Component 模式 — 可組合的 UI 元件
+
+Header、TabBar、Dialog 這些共用區塊抽成 Component，任何 Page 都能用：
+
+```python
+from core import Component, ComponentDescriptor, BasePage
+
+class HeaderComponent(Component):
+    BACK_BTN = (AppiumBy.ID, "com.app:id/btn_back")
+    TITLE = (AppiumBy.ID, "com.app:id/tv_title")
+
+    def tap_back(self): self.click(self.BACK_BTN)
+    def get_title(self) -> str: return self.get_text(self.TITLE)
+
+class SettingsPage(BasePage):
+    header = ComponentDescriptor(HeaderComponent)  # 宣告
+
+    def go_back(self):
+        self.header.tap_back()  # 直接使用
+```
+
+### 25. 語意化斷言 + Soft Assert
+
+更好讀的斷言，失敗訊息自動包含上下文：
+
+```python
+from core import expect, soft_assert
+
+def test_assertions(self, driver):
+    expect(page.get_title()).to_equal("首頁")
+    expect(price).to_be_greater_than(0)
+    expect(items).to_have_length(5)
+    expect(msg).to_contain("成功")
+    expect(error).to_be_empty()
+
+    # Soft Assert：收集全部失敗，最後一次報告
+    with soft_assert() as sa:
+        sa.expect(a).to_equal(1)
+        sa.expect(b).to_equal(2)
+        sa.expect(c).to_equal(3)
+    # ↑ 如果 b 和 c 都失敗，會一次列出兩個錯誤
+```
+
+### 26. Element Cache — 元素快取加速
+
+重複查找同一元素會自動走快取，stale 時自動重新查找：
+
+```python
+# BasePage 已內建，不用額外設定
+# 快取策略：TTL 30 秒、stale 檢查、LRU 淘汰、滑動/click 自動清除
+
+from core import element_cache
+
+element_cache.enabled = False   # 停用快取
+element_cache.clear()           # 清空
+print(element_cache.stats)      # {"hits": 50, "misses": 10, "hit_rate": 0.83}
+```
+
+### 27. 多環境設定繼承
+
+不用每個環境寫完整 config，只覆寫差異：
+
+```bash
+pytest --env staging          # 切換環境
+TEST_ENV=staging pytest       # 或用環境變數
+```
+
+```
+config/env/
+├── base.json      ← 所有環境共用
+├── dev.json       ← 覆蓋 base 的差異
+├── staging.json
+└── prod.json
+```
+
+```python
+from core import env
+
+url = env.get("appium_server")                # "http://staging-appium:4723"
+retry = env.get("retry_count")                # 3
+caps = env.get("capabilities.android")        # {...}
+env.set("log_level", "DEBUG")                 # runtime 動態修改
+```
+
+### 28. 自訂 Exception 體系
+
+每種失敗都有明確分類，不再只有 `TimeoutException`：
+
+```python
+from core import (
+    ElementNotFoundError,     # 找不到元素
+    ElementNotClickableError, # 無法點擊
+    PageNotLoadedError,       # 頁面未載入
+    DriverConnectionError,    # Appium Server 連不上
+    AppiumFrameworkError,     # catch 全部框架錯誤
+)
+
+try:
+    page.click(LOGIN_BTN)
+except ElementNotFoundError as e:
+    print(e.context)  # {"locator": (...), "timeout": 15}
+except AppiumFrameworkError:
+    # 攔截所有框架錯誤
+    pass
+```
+
+---
+
 ## 完整目錄結構
 
 ```
@@ -825,10 +1019,36 @@ appium/
 │   ├── config.py                  # 全域設定
 │   ├── android_caps.json          # Android capabilities
 │   ├── ios_caps.json              # iOS capabilities
-│   └── devices.json               # 多裝置平行測試設定
-├── core/
-│   ├── driver_manager.py          # Driver 生命週期
-│   └── base_page.py               # Page Object 基底
+│   ├── devices.json               # 多裝置平行測試設定
+│   └── env/                       # 多環境設定繼承
+│       ├── base.json              # 基底 (所有環境共用)
+│       ├── dev.json               # 開發環境
+│       └── staging.json           # Staging 環境
+├── core/                          # 框架核心
+│   ├── __init__.py                # 統一匯出
+│   ├── base_page.py               # Page Object 基底 (含 Cache/Middleware)
+│   ├── driver_manager.py          # Driver 生命週期 (含 Event)
+│   ├── component.py               # 可組合 UI 元件
+│   ├── assertions.py              # 語意化斷言 + Soft Assert
+│   ├── event_bus.py               # 事件發佈/訂閱
+│   ├── plugin_manager.py          # Plugin 系統
+│   ├── middleware.py              # 操作攔截 Middleware
+│   ├── element_cache.py           # 元素快取
+│   ├── env_manager.py             # 多環境設定
+│   └── exceptions.py              # Exception 階層體系
+├── plugins/                       # 自訂 Plugin (自動掃描)
+│   ├── retry_plugin.py            # 操作失敗自動重試
+│   ├── timing_plugin.py           # 操作耗時追蹤
+│   └── fail_handler_plugin.py     # 失敗現場保全
+├── generator/                     # 獨立產生器 (不影響框架)
+│   ├── __main__.py                # CLI 入口
+│   ├── engine.py                  # 核心引擎
+│   ├── schema.py                  # 資料結構定義
+│   ├── interactive.py             # 互動式問答
+│   ├── config_builder.py          # 設定檔產生
+│   ├── page_writer.py             # Page Object 產生
+│   ├── test_data_writer.py        # 測試資料產生
+│   └── test_writer.py             # 測試案例產生
 ├── pages/
 │   ├── login_page.py              # 登入頁面
 │   └── home_page.py               # 首頁
@@ -839,30 +1059,30 @@ appium/
 │   └── test_with_decorators.py    # Decorator 範例
 ├── test_data/
 │   └── login_data.json            # 測試資料
-├── utils/
+├── utils/                         # 工具層 (20+ 模組)
 │   ├── logger.py                  # 日誌
 │   ├── screenshot.py              # 截圖
 │   ├── wait_helper.py             # 等待/重試
-│   ├── data_loader.py             # 資料載入 (JSON/CSV)
-│   ├── data_factory.py            # 隨機測試資料工廠
-│   ├── api_client.py              # REST API 客戶端
+│   ├── data_loader.py             # 資料載入
+│   ├── data_factory.py            # 隨機資料工廠
+│   ├── api_client.py              # REST API
 │   ├── decorators.py              # 自訂裝飾器
-│   ├── element_helper.py          # 元素探索工具
-│   ├── allure_helper.py           # Allure 報告整合
+│   ├── element_helper.py          # 元素探索
+│   ├── allure_helper.py           # Allure 報告
 │   ├── gesture_helper.py          # 手勢操作
-│   ├── app_manager.py             # App 生命週期管理
+│   ├── app_manager.py             # App 生命週期
 │   ├── device_helper.py           # 裝置控制
 │   ├── perf_monitor.py            # 效能監控
-│   ├── notifier.py                # Slack/Webhook 通知
-│   ├── parallel.py                # 多裝置平行測試
-│   ├── image_compare.py           # 視覺回歸測試
-│   ├── webview_helper.py          # WebView 切換 (Hybrid)
-│   ├── log_collector.py           # 裝置 Log 收集
+│   ├── notifier.py                # Slack/Webhook
+│   ├── parallel.py                # 多裝置平行
+│   ├── image_compare.py           # 視覺回歸
+│   ├── webview_helper.py          # WebView 切換
+│   ├── log_collector.py           # 裝置 Log
 │   ├── accessibility_helper.py    # 無障礙測試
-│   ├── biometric_helper.py        # 生物辨識模擬
-│   ├── report_plugin.py           # 自訂測試報告
-│   └── auto_test_generator.py     # 自動測試產生器
-├── conftest.py                    # pytest fixtures
+│   ├── biometric_helper.py        # 生物辨識
+│   ├── report_plugin.py           # 測試報告
+│   └── auto_test_generator.py     # 自動掃描產生器
+├── conftest.py                    # pytest fixtures + Plugin 載入
 ├── pytest.ini
 ├── requirements.txt
 └── .gitignore
