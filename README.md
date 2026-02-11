@@ -139,6 +139,11 @@ class TestExample:
 │                  核心基底 (core/)                            │
 │  BasePage  DriverManager  Assertions  EnvManager           │
 │  PageValidator  RecoveryManager  ResultDB  SelfHealer      │
+│                                                            │
+│         ┌── Web 平台 ──────────────────────────┐           │
+│         │  NiceGUI Dashboard / 測試管理 / 裝置   │           │
+│         │  影片回放 / 歷史趨勢 / 設定            │           │
+│         └────────────────────────────────────┘           │
 ├────────────────────────────────────────────────────────────┤
 │           基礎設施 — 可插拔，不改核心即可擴充                  │
 │  ┌──────────────┐ ┌────────────┐ ┌───────────────────┐     │
@@ -500,9 +505,22 @@ graph TB
 
     GE -.->|產出到外部目錄| TEST
 
+    subgraph Web 平台
+        WEB[NiceGUI App<br/>Dashboard + 管理]
+        RS[ResultService<br/>資料查詢]
+        TRS[TestRunnerService<br/>測試執行]
+        DVS[DeviceService<br/>裝置偵測]
+    end
+
+    WEB --> RS --> RDB
+    WEB --> TRS --> TEST
+    WEB --> DVS
+    WEB --> SS
+
     style 核心層 fill:#e3f2fd
     style 基礎設施層 fill:#f3e5f5
     style 測試工具層 fill:#fce4ec
+    style Web 平台 fill:#e0f7fa
     style Scanner 模組 fill:#e8f5e9
     style Plugin 層 fill:#fff3e0
 ```
@@ -1743,6 +1761,72 @@ gen.generate("output/report.html", result_db_path="reports/test_results.db")
 
 ---
 
+## Web 測試平台
+
+### 40. NiceGUI Web Dashboard — 團隊測試管理平台
+
+基於 NiceGUI (底層 FastAPI + WebSocket) 的團隊內部測試管理平台：
+
+```bash
+# 啟動平台
+python -m web.app
+# 瀏覽器開啟 http://localhost:8080
+```
+
+**預設帳號：**
+- 管理員: `admin` / `admin123`
+- 測試工程師: `tester` / `test123`
+
+**6 大功能頁面：**
+
+| 頁面 | 功能 |
+|------|------|
+| Dashboard | 統計卡片、通過率趨勢圖、執行時間趨勢、失敗數趨勢、最近 Run 列表 |
+| 測試管理 | 測試檔案列表、Smart Select 風險排名 (含風險分布圓餅圖)、執行測試 + 即時 log |
+| 裝置管理 | Android/iOS 裝置自動偵測、型號/品牌/版本/電量/螢幕資訊 |
+| 影片回放 | 測試錄影瀏覽 + 播放器、按檔名搜尋、失敗標記 |
+| 歷史趨勢 | Flaky Test 分析 (分數排名圖表)、單一測試歷史、Run 比對 (回歸分析) |
+| 設定 | 修改密碼、框架模組狀態總覽、使用者管理 (admin) |
+
+**技術亮點：**
+- 純 Python 開發，不需要前端框架
+- 即時 WebSocket 推送測試執行狀態
+- Highcharts 圖表 (通過率、執行時間、Flaky 分數)
+- 團隊認證 + 角色分級 (admin / member / viewer)
+- 與現有 39 個模組無縫整合
+
+```mermaid
+flowchart TB
+    subgraph 瀏覽器
+        UI[NiceGUI 前端<br/>Quasar UI + Highcharts]
+    end
+
+    subgraph Web 伺服器
+        APP[app.py<br/>路由 + 認證]
+        AUTH[auth.py<br/>帳號管理]
+        PG[pages/<br/>6 個功能頁面]
+        SVC[services/<br/>查詢 + 執行]
+    end
+
+    subgraph 框架核心
+        RDB[(ResultDB<br/>SQLite)]
+        TR[TestRunner<br/>pytest 執行]
+        DS[DeviceService<br/>ADB / idevice]
+        SS[SmartSelector<br/>風險計算]
+    end
+
+    UI <-->|WebSocket| APP
+    APP --> AUTH
+    APP --> PG
+    PG --> SVC
+    SVC --> RDB
+    SVC --> TR
+    SVC --> DS
+    SVC --> SS
+```
+
+---
+
 ## 完整目錄結構
 
 ```
@@ -1834,6 +1918,23 @@ appium/
 │   ├── monkey_tester.py           # 隨機壓力測試
 │   ├── network_simulator.py       # 弱網模擬
 │   └── video_recorder.py          # 測試錄影
+├── web/                          # NiceGUI Web 測試平台
+│   ├── app.py                    # 主程式 (路由 + 認證)
+│   ├── auth.py                   # 團隊帳號管理
+│   ├── users.json                # 使用者資料
+│   ├── components/
+│   │   └── layout.py             # 共用佈局 (header + sidebar + stat_card)
+│   ├── pages/
+│   │   ├── dashboard.py          # Dashboard 總覽
+│   │   ├── tests.py              # 測試管理 + 風險排名 + 執行
+│   │   ├── devices.py            # 裝置管理
+│   │   ├── videos.py             # 影片回放
+│   │   ├── history.py            # 歷史趨勢 + Flaky + Run 比對
+│   │   └── settings.py           # 設定 + 使用者管理
+│   └── services/
+│       ├── result_service.py     # ResultDB 查詢服務
+│       ├── test_runner_service.py # 測試執行服務
+│       └── device_service.py     # 裝置偵測服務
 ├── reports/                      # 測試報告輸出
 │   └── test_results.db           # ResultDB (SQLite)
 ├── screenshots/                  # 截圖輸出 (含差異圖)
