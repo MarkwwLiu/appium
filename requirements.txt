@@ -24,6 +24,3 @@ requests>=2.31.0
 # Allure 報告 (選裝)
 # pip install allure-pytest
 # allure-pytest>=2.13.0
-
-# Web 測試平台
-nicegui>=2.0.0
