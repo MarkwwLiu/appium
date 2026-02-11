@@ -7,6 +7,8 @@ pytest 全域 fixtures
 - 命令列參數支援 (--platform, --env)
 - Plugin 系統自動載入
 - Event Bus 測試生命週期事件
+- Result DB 自動記錄測試結果
+- Recovery Manager 自動恢復異常狀態
 - 各工具模組 fixtures
 """
 
@@ -18,6 +20,8 @@ import pytest
 from core.driver_manager import DriverManager
 from core.element_cache import element_cache
 from core.plugin_manager import plugin_manager
+from core.recovery import recovery_manager
+from core.result_db import result_db
 from utils.logger import logger
 from utils.screenshot import take_screenshot
 from utils.allure_helper import attach_screenshot, attach_text
@@ -25,16 +29,37 @@ from utils.allure_helper import attach_screenshot, attach_text
 # 載入自訂報告 plugin
 from utils import report_plugin  # noqa: F401
 
+# ── Session 級變數 ──
+_current_run_id: str | None = None
+
 
 # ── 框架初始化 ──
 
 def pytest_configure(config):
-    """pytest 啟動時：自動掃描 plugins/ 目錄"""
+    """pytest 啟動時：自動掃描 plugins/ 目錄 + 初始化 ResultDB run"""
     plugins_dir = Path(__file__).resolve().parent / "plugins"
     if plugins_dir.exists():
         loaded = plugin_manager.discover(plugins_dir)
         if loaded:
             logger.info(f"自動載入 {loaded} 個 plugin")
+
+
+def pytest_sessionstart(session):
+    """整個測試 session 開始：建立 ResultDB run"""
+    global _current_run_id
+    platform = session.config.getoption("--platform", default="android")
+    env_name = session.config.getoption("--env", default="dev")
+    _current_run_id = result_db.start_run(platform=platform, env=env_name)
+    logger.info(f"[ResultDB] Run 開始: {_current_run_id}")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """整個測試 session 結束：結束 ResultDB run"""
+    global _current_run_id
+    if _current_run_id:
+        result_db.end_run(_current_run_id)
+        logger.info(f"[ResultDB] Run 結束: {_current_run_id}")
+        _current_run_id = None
 
 
 # ── 命令列參數 ──
@@ -184,17 +209,57 @@ def soft_assert():
     return _soft_assert
 
 
+# ── 頁面驗證 / Recovery Fixtures ──
+
+@pytest.fixture
+def page_validator(driver):
+    """頁面驗證器 fixture"""
+    from core.page_validator import PageValidator
+    return PageValidator(driver)
+
+
+@pytest.fixture
+def recovery(driver):
+    """Recovery Manager fixture：手動觸發恢復"""
+    class _RecoveryHelper:
+        def try_recover(self):
+            return recovery_manager.try_recover(driver)
+
+        @property
+        def stats(self):
+            return recovery_manager.stats
+
+        @property
+        def history(self):
+            return recovery_manager.get_history()
+
+    return _RecoveryHelper()
+
+
 # ── 測試生命週期 Hook ──
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """測試結束時：截圖 + log + Plugin 通知"""
+    """測試結束時：截圖 + log + Plugin 通知 + ResultDB 記錄"""
     outcome = yield
     report = outcome.get_result()
 
     if report.when == "call":
         driver = item.funcargs.get("driver")
         test_name = item.name
+
+        # 寫入 ResultDB
+        if _current_run_id:
+            error_msg = str(report.longrepr) if report.failed else ""
+            result_db.record(
+                run_id=_current_run_id,
+                test_name=test_name,
+                outcome="passed" if report.passed else (
+                    "failed" if report.failed else "skipped"
+                ),
+                duration=report.duration,
+                error_message=error_msg,
+            )
 
         if report.passed:
             plugin_manager.emit_test_pass(test_name, report.duration)

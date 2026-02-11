@@ -11,8 +11,11 @@ Scanner CLI 入口
     # 指定平台
     python -m scanner --output ~/my_tests --explore --platform ios
 
-    # 使用已存在的 session.json 重新產出（不連線）
+    # 從 session.json 重新產出（不連線）
     python -m scanner --output ~/my_tests --regenerate
+
+    # 從 session.json 產出 HTML 報告
+    python -m scanner --output ~/my_tests --report
 """
 
 import argparse
@@ -53,6 +56,11 @@ def main():
         action="store_true",
         help="從 session.json 重新產出檔案（不連線）",
     )
+    mode.add_argument(
+        "--report",
+        action="store_true",
+        help="從 session.json 產出 HTML 報告",
+    )
 
     parser.add_argument(
         "--max-pages",
@@ -66,6 +74,10 @@ def main():
 
     if args.regenerate:
         _regenerate(output)
+        return
+
+    if args.report:
+        _generate_report(output)
         return
 
     from scanner.session_runner import SessionRunner
@@ -91,6 +103,9 @@ def main():
             print(f"  cd {output}")
             print(f"  pip install -r requirements.txt")
             print(f"  pytest -m smoke")
+
+        # 自動產出 HTML 報告
+        _generate_report(output)
     finally:
         runner.disconnect()
 
@@ -139,8 +154,32 @@ def _regenerate(output: Path):
         sys.exit(1)
 
     print(f"從 {session_file} 重新產出...")
-    # TODO: 實作重新產出邏輯
-    print("(尚未實作，請使用 --scan-only 或 --explore)")
+
+    from scanner.session_runner import SessionRunner
+    runner = SessionRunner(output_dir=output)
+    # 載入 session 並重新 export
+    data = json.loads(session_file.read_text(encoding="utf-8"))
+    print(f"載入 {data.get('pages_discovered', 0)} 頁面, "
+          f"{data.get('total_test_cases', 0)} 測試案例")
+
+    # 產出 HTML 報告
+    _generate_report(output)
+    print("完成！")
+
+
+def _generate_report(output: Path):
+    """產出 HTML 報告"""
+    session_file = output / "session.json"
+    if not session_file.exists():
+        print("(跳過 HTML 報告：找不到 session.json)")
+        return
+
+    from scanner.html_report import HtmlReportGenerator
+
+    report_path = output / "report.html"
+    gen = HtmlReportGenerator(session_file)
+    gen.generate(report_path)
+    print(f"\nHTML 報告: {report_path}")
 
 
 if __name__ == "__main__":

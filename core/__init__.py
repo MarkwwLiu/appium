@@ -6,7 +6,8 @@ core — 框架核心
 用法：
     from core import BasePage, Component, expect, soft_assert
     from core import event_bus, plugin_manager, middleware_chain
-    from core import env
+    from core import env, recovery_manager, result_db
+    from core import PageValidator, rule
     from core import ElementNotFoundError, PageNotLoadedError
 """
 
@@ -35,7 +36,10 @@ from core.exceptions import (
     TestDataError,
 )
 from core.middleware import MiddlewareContext, middleware_chain
+from core.page_validator import PageValidator, rule
 from core.plugin_manager import Plugin, plugin_manager
+from core.recovery import recovery_manager
+from core.result_db import result_db
 
 __all__ = [
     # Driver / Page / Component
@@ -46,6 +50,9 @@ __all__ = [
     # Assertions
     "expect",
     "soft_assert",
+    # Validation
+    "PageValidator",
+    "rule",
     # Infrastructure
     "event_bus",
     "plugin_manager",
@@ -54,6 +61,8 @@ __all__ = [
     "MiddlewareContext",
     "element_cache",
     "env",
+    "recovery_manager",
+    "result_db",
     # Exceptions
     "AppiumFrameworkError",
     "DriverError",

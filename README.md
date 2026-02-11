@@ -830,6 +830,162 @@ def test_scan_and_verify(self, driver):
 
 ---
 
+## 智慧掃描模組 (scanner/)
+
+### 29. Recovery Manager — 自動恢復異常狀態
+
+測試中遇到 crash、彈窗、ANR 自動處理，不中斷測試：
+
+```python
+from core import recovery_manager
+
+# 自動模式：已整合進 Middleware（需啟用 RecoveryPlugin）
+# 操作失敗 → Recovery 嘗試恢復 → 重試操作
+
+# 手動調用
+recovery_manager.try_recover(driver)
+
+# 查看統計
+print(recovery_manager.stats)
+# {"total_attempts": 5, "success": 4, "fail": 1, "strategies": [...]}
+
+# 註冊自訂恢復策略
+@recovery_manager.register("my_dialog", priority=25)
+def handle_my_dialog(driver):
+    # 關閉自訂 dialog
+    driver.find_element(AppiumBy.ID, "close_btn").click()
+    return True  # 回傳 True = 恢復成功
+```
+
+內建策略（按優先序）：
+
+| 優先序 | 策略 | 說明 |
+|--------|------|------|
+| 10 | permission_dialog | Android 權限彈窗（允許/拒絕） |
+| 15 | anr_dialog | ANR 對話框（點擊等待） |
+| 20 | system_dialog | 系統彈窗（更新、評價等） |
+| 35 | webview_escape | WebView 卡住切回 Native |
+| 40 | crash_restart | App crash 後重啟 |
+| 50 | back_button | 按返回鍵嘗試恢復 |
+
+### 30. Test Result DB — SQLite 歷史結果 + 回歸比對
+
+每次測試結果自動存入 SQLite（已整合到 conftest.py），支援歷史查詢和趨勢分析：
+
+```python
+from core import result_db
+
+# 自動模式：conftest 已整合
+# pytest_sessionstart → start_run()
+# pytest_runtest_makereport → record()
+# pytest_sessionfinish → end_run()
+
+# 手動查詢
+history = result_db.get_history("test_login::test_positive", limit=10)
+trend = result_db.get_pass_rate_trend(limit=20)
+flaky = result_db.get_flaky_tests(window=20)
+
+# 比較兩次 run
+diff = result_db.compare_runs("run_20250115_1", "run_20250116_1")
+print(diff["new_failures"])   # 新增失敗
+print(diff["fixed"])          # 修復的
+print(diff["still_failing"])  # 持續失敗
+```
+
+結果存在 `reports/test_results.db`，可用任何 SQLite 工具查看。
+
+### 31. Page Validator — 宣告式頁面驗證
+
+用宣告式規則驗證頁面，取代散落的 assert：
+
+```python
+from core import PageValidator, rule
+
+validator = PageValidator(driver)
+validator.add_rules([
+    rule.element_visible(LoginPage.USERNAME),
+    rule.element_visible(LoginPage.PASSWORD),
+    rule.element_clickable(LoginPage.LOGIN_BTN),
+    rule.text_equals(LoginPage.TITLE, "登入"),
+    rule.no_error_toast(),
+    rule.page_load_under(seconds=5),
+    rule.element_count_gte(HomePage.LIST_ITEMS, minimum=3),
+])
+
+# 執行驗證
+result = validator.validate()
+print(result.summary)
+# 驗證結果: 7/7 通過
+#   [PASS] element_visible(...): 元素可見
+#   [PASS] text_equals(...): 文字正確
+#   ...
+
+# 或一行搞定
+validator.assert_all()
+
+# 自訂規則
+validator.add_rule(
+    rule.custom("check_balance", lambda d: float(d.find_element(...).text) > 0)
+)
+```
+
+### 32. Flow Navigator — 自動導航到指定頁面
+
+根據 Scanner 錄製的轉場圖，自動從當前頁面導航到目標頁面：
+
+```python
+from scanner.flow_navigator import FlowNavigator
+
+nav = FlowNavigator(driver, "output/session.json")
+
+# 查看已知頁面
+print(nav.known_pages)  # ["login_page", "home_page", "settings_page"]
+
+# 查看路徑（不執行）
+path = nav.find_path("login_page", "settings_page")
+
+# 自動導航（BFS 最短路徑 → 依序執行填值 + 點擊）
+result = nav.navigate_to("settings_page")
+if result.success:
+    print(f"成功到達！共 {result.steps_taken} 步")
+else:
+    print(f"失敗：停在 {result.actual_page}, 錯誤: {result.error}")
+```
+
+### 33. HTML Report — 豐富的測試報告
+
+從 session.json 產生獨立 HTML 報告（內嵌截圖、Mermaid 流程圖）：
+
+```bash
+# CLI 方式
+python -m scanner -o ~/my_tests --report
+
+# 或掃描完自動產出
+python -m scanner -o ~/my_tests --explore
+# → 自動在 output/ 產出 report.html
+```
+
+```python
+from scanner.html_report import HtmlReportGenerator
+
+gen = HtmlReportGenerator("output/session.json")
+gen.generate("output/report.html")
+
+# 搭配 ResultDB（加入歷史趨勢）
+gen.generate("output/report.html", result_db_path="reports/test_results.db")
+```
+
+報告包含：
+- 統計面板（頁面數、元素數、測試案例數）
+- 頁面掃描結果表格
+- Mermaid 流程圖（頁面轉場關係）
+- 轉場記錄明細
+- 測試資料表格（正向/反向/邊界/安全）
+- 內嵌截圖（Base64，獨立 HTML 檔）
+- 歷史通過率趨勢 + Flaky Test 列表
+
+---
+
 ## 基礎設施（維護性 / 擴充性）
 
 以下是讓框架「不用一直改核心就能擴充」的底層機制：
@@ -1035,11 +1191,15 @@ appium/
 │   ├── middleware.py              # 操作攔截 Middleware
 │   ├── element_cache.py           # 元素快取
 │   ├── env_manager.py             # 多環境設定
-│   └── exceptions.py              # Exception 階層體系
+│   ├── exceptions.py              # Exception 階層體系
+│   ├── recovery.py                # 自動恢復管理器
+│   ├── result_db.py               # SQLite 測試結果 DB
+│   └── page_validator.py          # 宣告式頁面驗證
 ├── plugins/                       # 自訂 Plugin (自動掃描)
 │   ├── retry_plugin.py            # 操作失敗自動重試
 │   ├── timing_plugin.py           # 操作耗時追蹤
-│   └── fail_handler_plugin.py     # 失敗現場保全
+│   ├── fail_handler_plugin.py     # 失敗現場保全
+│   └── recovery_plugin.py         # 異常恢復 + 重試
 ├── generator/                     # 獨立產生器 (不影響框架)
 │   ├── __main__.py                # CLI 入口
 │   ├── engine.py                  # 核心引擎
@@ -1049,6 +1209,14 @@ appium/
 │   ├── page_writer.py             # Page Object 產生
 │   ├── test_data_writer.py        # 測試資料產生
 │   └── test_writer.py             # 測試案例產生
+├── scanner/                       # 智慧頁面掃描模組
+│   ├── __main__.py                # CLI 入口
+│   ├── analyzer.py                # 頁面分析 + 語意推斷
+│   ├── smart_test_data.py         # 語意感知測試資料
+│   ├── flow_recorder.py           # 流程錄製 + 轉場記錄
+│   ├── flow_navigator.py          # 自動導航 (BFS 路徑)
+│   ├── html_report.py             # HTML 報告產生器
+│   └── session_runner.py          # 完整掃描 Session 管理
 ├── pages/
 │   ├── login_page.py              # 登入頁面
 │   └── home_page.py               # 首頁
