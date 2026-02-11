@@ -1,0 +1,9 @@
+{
+    "platformName": "Android",
+    "appium:automationName": "UiAutomator2",
+    "appium:deviceName": "emulator-5554",
+    "appium:app": "/path/to/your/app.apk",
+    "appium:noReset": false,
+    "appium:newCommandTimeout": 300,
+    "appium:autoGrantPermissions": true
+}
