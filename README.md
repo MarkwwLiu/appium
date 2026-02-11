@@ -138,7 +138,7 @@ class TestExample:
 ├────────────────┴───────────────────────────────────────────┤
 │                  核心基底 (core/)                            │
 │  BasePage  DriverManager  Assertions  EnvManager           │
-│  PageValidator  RecoveryManager  ResultDB                  │
+│  PageValidator  RecoveryManager  ResultDB  SelfHealer      │
 ├────────────────────────────────────────────────────────────┤
 │           基礎設施 — 可插拔，不改核心即可擴充                  │
 │  ┌──────────────┐ ┌────────────┐ ┌───────────────────┐     │
@@ -374,6 +374,47 @@ flowchart LR
     end
 ```
 
+### Self-Healing 自動修復流程
+
+```mermaid
+flowchart TD
+    A[BasePage 操作] --> B{元素找得到?}
+    B -->|是| OK[正常執行]
+    B -->|否| C[SelfHealer 啟動]
+
+    C --> D[取得 page source]
+    D --> E[從原 locator 提取關鍵字]
+    E --> F[產生候選策略]
+
+    F --> S1[策略 1: text 匹配]
+    F --> S2[策略 2: content-desc]
+    F --> S3[策略 3: resource-id 部分匹配]
+    F --> S4[策略 4: class + text 組合]
+    F --> S5[策略 5: hint 屬性]
+
+    S1 & S2 & S3 & S4 & S5 --> G{找到元素?}
+    G -->|是| H[記錄修復建議]
+    H --> I[回傳元素 + 繼續操作]
+    G -->|否| FAIL[拋出原始例外]
+```
+
+### Monkey Testing 壓力測試流程
+
+```mermaid
+flowchart TD
+    A[設定參數<br/>duration / rate / weights] --> B[建立動作池<br/>tap=35 swipe=25 back=15...]
+    B --> C{時間到?}
+    C -->|是| R[產出結果報告]
+    C -->|否| D[隨機選動作]
+    D --> E[執行動作]
+    E -->|成功| F[記錄事件]
+    E -->|失敗| G[RecoveryManager 恢復]
+    G -->|恢復成功| H[記錄 recovery]
+    G -->|恢復失敗| I[記錄 crash]
+    F & H & I --> J[等待 interval]
+    J --> C
+```
+
 ### 模組完整關係圖
 
 ```mermaid
@@ -392,6 +433,7 @@ graph TB
         DM[DriverManager<br/>Driver 生命週期]
         ASSERT[Assertions<br/>語意化斷言]
         PV[PageValidator<br/>宣告式驗證]
+        SH[SelfHealer<br/>Locator 自動修復]
     end
 
     subgraph 基礎設施層
@@ -403,6 +445,14 @@ graph TB
         RDB[ResultDB<br/>結果儲存]
         ENV[EnvManager<br/>多環境設定]
         EX[Exceptions<br/>例外體系]
+    end
+
+    subgraph 測試工具層
+        NM[NetworkMock<br/>API 攔截模擬]
+        NS[NetworkSimulator<br/>弱網模擬]
+        MK[MonkeyTester<br/>隨機壓力測試]
+        VR[VideoRecorder<br/>測試錄影]
+        SS[SmartSelector<br/>智慧選測]
     end
 
     subgraph Plugin 層
@@ -432,12 +482,16 @@ graph TB
     BP --> EC
     BP --> EX
     MW --> P1 & P2 & P3
+    MW --> SH
     P3 --> RM
     DM --> EB
     PM --> P1 & P2 & P3 & P4
     TEST -.-> ASSERT
     TEST -.-> PV
     TEST -.-> RDB
+    TEST -.-> NM & NS & MK & VR
+    SS --> RDB
+    MK --> RM
 
     SR --> SA --> STD
     SR --> FR --> FN
@@ -448,6 +502,7 @@ graph TB
 
     style 核心層 fill:#e3f2fd
     style 基礎設施層 fill:#f3e5f5
+    style 測試工具層 fill:#fce4ec
     style Scanner 模組 fill:#e8f5e9
     style Plugin 層 fill:#fff3e0
 ```
@@ -594,10 +649,16 @@ class TestLogin:
 | `log_collector` | function | 裝置 log 收集 (自動啟停) |
 | `expect` | function | 語意化斷言 |
 | `soft_assert` | function | Soft Assert |
+| `network_mock` | function | API 攔截與模擬回應 |
+| `network_condition` | function | 弱網模擬 (2G/3G/離線) |
+| `video_recorder` | function | 測試錄影 |
+| `monkey` | function | Monkey 隨機壓力測試 |
 
 **命令列參數：**
 - `--platform android|ios`：指定測試平台
 - `--env dev|staging|prod`：指定測試環境
+- `--smart-select`：啟用智慧選測 (高風險優先)
+- `--risk-threshold 0.3`：風險門檻 (搭配 --smart-select)
 
 ---
 
@@ -1209,13 +1270,141 @@ def test_scan_and_verify(self, driver):
 ============================================================
 ```
 
+### 21. Network Mock — API 攔截與模擬回應
+
+測試不依賴真實後端，透過本地 Mock Server 模擬 API 回應：
+
+```python
+def test_server_error(self, driver, network_mock):
+    # 模擬 API 錯誤
+    network_mock.mock("/api/login", status=500, body={"error": "伺服器錯誤"})
+    network_mock.mock_timeout("/api/data")      # 模擬逾時
+    network_mock.mock_empty("/api/users")        # 空資料
+
+    # 操作 App，驗證錯誤處理畫面...
+
+    # 驗證 API 是否被呼叫
+    network_mock.assert_called("/api/login", times=1)
+    network_mock.assert_not_called("/api/admin")
+    network_mock.clear()
+```
+
+支援功能：URL 正則匹配、自訂狀態碼、延遲注入、請求記錄、斷言 helpers。
+
+### 22. Smart Test Selection — 智慧選測
+
+根據歷史失敗率、flaky 分數、上次結果，自動計算風險權重，優先跑高風險測試：
+
+```bash
+# 只跑風險 > 0.3 的測試，大幅縮短 CI 時間
+pytest --smart-select --risk-threshold 0.3
+
+# 最多跑 50 個最高風險測試
+pytest --smart-select --max-tests 50
+```
+
+```python
+from utils.smart_selector import SmartSelector
+
+selector = SmartSelector(result_db_path="reports/test_results.db")
+selector.print_report()     # 印出風險排名
+ranked = selector.rank_tests()
+skip = selector.get_skip_list(threshold=0.1)  # 取得建議跳過的低風險測試
+```
+
+風險公式：`risk = 0.5 × 失敗率 + 0.3 × 不穩定度 + 0.2 × 上次失敗`
+
+### 23. Monkey Testing — 隨機壓力測試
+
+隨機點擊/滑動/輸入/返回，找出 crash 和 ANR，搭配 Recovery 自動恢復：
+
+```python
+def test_stability(self, driver, monkey):
+    # 排除通知欄和導航列
+    monkey.exclude_region(y_max=100)
+    monkey.exclude_region(y_min=2400)
+
+    result = monkey.run(duration=120, actions_per_minute=30)
+    print(result.summary)
+    # → 執行 120秒, 共 60 動作, 0 次 crash, 2 次 recovery
+
+    assert result.crashes == 0, f"發現 {result.crashes} 次 crash"
+```
+
+支援自訂動作權重：`tap=35, swipe=25, back=15, input=10, rotate=5, home=5, long_press=5`
+
+### 24. Network Condition Simulator — 弱網模擬
+
+模擬各種網路環境，驗證 App 在惡劣網路下的行為：
+
+```python
+def test_offline_mode(self, driver, network_condition):
+    network_condition.set_3g()        # 3G 網路
+    # 驗證 loading 畫面...
+
+    network_condition.set_offline()    # 完全離線
+    # 驗證離線提示...
+
+    network_condition.set_custom(      # 自訂條件
+        latency_ms=500,
+        download_kbps=128,
+        packet_loss=10,                # 10% 丟包
+    )
+
+    network_condition.reset()          # 恢復正常
+```
+
+預設設定檔：`2G` / `3G` / `4G` / `WiFi` / `高丟包 (20%)` / `極慢`
+
+### 25. Video Recorder — 測試錄影
+
+測試執行時錄影，失敗時保留影片，比截圖更有效重現問題：
+
+```python
+def test_login_flow(self, driver, video_recorder):
+    video_recorder.start()
+    # ... 執行測試操作 ...
+
+    # 失敗時保留影片
+    video_recorder.stop_and_save("test_login_flow")
+
+    # 通過時丟棄
+    video_recorder.stop_and_discard()
+```
+
+支援 Appium API 錄影 (Android + iOS) 和 ADB screenrecord 備用模式。
+影片儲存在 `reports/videos/`。
+
+### 26. Locator Self-Healing — 元素定位自動修復
+
+當 locator 失效時，自動分析頁面結構嘗試備選策略找到目標：
+
+```python
+# 自動模式：整合進 Middleware，對測試程式碼完全透明
+# 原 locator 失敗 → 分析 page source → 嘗試備選策略 → 找到並回傳
+
+# 手動模式
+from core.self_healing import SelfHealer
+healer = SelfHealer(driver)
+element = healer.find_element(("id", "old_login_btn"))
+
+# 查看修復報告
+print(SelfHealer.get_report())
+# [1] text_match
+#     原始: ('id', 'old_login_btn')
+#     修復: ('xpath', '//*[@text="登入"]')
+#     建議更新 locator: ('xpath', '//*[@text="登入"]')
+```
+
+備選策略優先序：`text 匹配` → `content-desc` → `resource-id 部分匹配` → `class+text` → `hint`
+
 ---
 
 ## 核心基礎設施
 
-以下是框架核心層新增的三大模組，已深度整合進 conftest.py 與 Middleware：
+以下是框架核心層的三大模組，已深度整合進 conftest.py 與 Middleware：
 
-### 21. Recovery Manager — 自動恢復異常狀態
+### 27. Recovery Manager — 自動恢復異常狀態
 
 測試中遇到 crash、彈窗、ANR 自動處理，不中斷測試：
 
@@ -1251,7 +1440,7 @@ def handle_my_dialog(driver):
 | 40 | crash_restart | App crash 後重啟 |
 | 50 | back_button | 按返回鍵嘗試恢復 |
 
-### 22. Test Result DB — SQLite 歷史結果 + 回歸比對
+### 28. Test Result DB — SQLite 歷史結果 + 回歸比對
 
 每次測試結果自動存入 SQLite（已整合到 conftest.py），支援歷史查詢和趨勢分析：
 
@@ -1277,7 +1466,7 @@ print(diff["still_failing"])  # 持續失敗
 
 結果存在 `reports/test_results.db`，可用任何 SQLite 工具查看。
 
-### 23. Page Validator — 宣告式頁面驗證
+### 29. Page Validator — 宣告式頁面驗證
 
 用宣告式規則驗證頁面，取代散落的 assert：
 
@@ -1318,7 +1507,7 @@ validator.add_rule(
 
 以下是讓框架「不用一直改核心就能擴充」的底層機制：
 
-### 24. Plugin 系統 — 可插拔擴充
+### 30. Plugin 系統 — 可插拔擴充
 
 自訂功能放在 `plugins/` 目錄，框架啟動時自動載入，不改核心程式碼：
 
@@ -1342,7 +1531,7 @@ class MyPlugin(Plugin):
 
 內建 Plugin：`retry_plugin`（自動重試）、`timing_plugin`（耗時追蹤）、`fail_handler_plugin`（失敗現場保全）。
 
-### 25. Event Bus — 事件發佈/訂閱
+### 31. Event Bus — 事件發佈/訂閱
 
 模組間不用互相 import，透過事件解耦：
 
@@ -1364,7 +1553,7 @@ def on_page_event(event):
 # screenshot.taken
 ```
 
-### 26. Middleware — Page 操作前後攔截
+### 32. Middleware — Page 操作前後攔截
 
 類似 Express.js 的 middleware 概念，每個 click / input 都經過 middleware 鏈：
 
@@ -1385,7 +1574,7 @@ def click_wait(context, next_fn):
     return next_fn()
 ```
 
-### 27. Component 模式 — 可組合的 UI 元件
+### 33. Component 模式 — 可組合的 UI 元件
 
 Header、TabBar、Dialog 這些共用區塊抽成 Component，任何 Page 都能用：
 
@@ -1406,7 +1595,7 @@ class SettingsPage(BasePage):
         self.header.tap_back()  # 直接使用
 ```
 
-### 28. 語意化斷言 + Soft Assert
+### 34. 語意化斷言 + Soft Assert
 
 更好讀的斷言，失敗訊息自動包含上下文：
 
@@ -1428,7 +1617,7 @@ def test_assertions(self, driver):
     # ↑ 如果 b 和 c 都失敗，會一次列出兩個錯誤
 ```
 
-### 29. Element Cache — 元素快取加速
+### 35. Element Cache — 元素快取加速
 
 重複查找同一元素會自動走快取，stale 時自動重新查找：
 
@@ -1443,7 +1632,7 @@ element_cache.clear()           # 清空
 print(element_cache.stats)      # {"hits": 50, "misses": 10, "hit_rate": 0.83}
 ```
 
-### 30. 多環境設定繼承
+### 36. 多環境設定繼承
 
 不用每個環境寫完整 config，只覆寫差異：
 
@@ -1469,7 +1658,7 @@ caps = env.get("capabilities.android")        # {...}
 env.set("log_level", "DEBUG")                 # runtime 動態修改
 ```
 
-### 31. 自訂 Exception 體系
+### 37. 自訂 Exception 體系
 
 每種失敗都有明確分類，不再只有 `TimeoutException`：
 
@@ -1497,7 +1686,7 @@ except AppiumFrameworkError:
 
 Scanner 模組可連接模擬器，自動掃描頁面元素、推斷語意、產生測試資料，並支援自動探索多頁面流程。
 
-### 32. Flow Navigator — 自動導航到指定頁面
+### 38. Flow Navigator — 自動導航到指定頁面
 
 根據 Scanner 錄製的轉場圖，自動從當前頁面導航到目標頁面：
 
@@ -1520,7 +1709,7 @@ else:
     print(f"失敗：停在 {result.actual_page}, 錯誤: {result.error}")
 ```
 
-### 33. HTML Report — 豐富的測試報告
+### 39. HTML Report — 豐富的測試報告
 
 從 session.json 產生獨立 HTML 報告（內嵌截圖、Mermaid 流程圖）：
 
@@ -1583,7 +1772,8 @@ appium/
 │   ├── exceptions.py              # Exception 階層體系
 │   ├── recovery.py                # 自動恢復管理器
 │   ├── result_db.py               # SQLite 測試結果 DB
-│   └── page_validator.py          # 宣告式頁面驗證
+│   ├── page_validator.py          # 宣告式頁面驗證
+│   └── self_healing.py            # Locator 自動修復
 ├── plugins/                       # 自訂 Plugin (自動掃描)
 │   ├── retry_plugin.py            # 操作失敗自動重試
 │   ├── timing_plugin.py           # 操作耗時追蹤
@@ -1638,7 +1828,12 @@ appium/
 │   ├── accessibility_helper.py    # 無障礙測試
 │   ├── biometric_helper.py        # 生物辨識
 │   ├── report_plugin.py           # 測試報告
-│   └── auto_test_generator.py     # 自動掃描產生器
+│   ├── auto_test_generator.py     # 自動掃描產生器
+│   ├── network_mock.py            # API 攔截與模擬回應
+│   ├── smart_selector.py          # 智慧選測
+│   ├── monkey_tester.py           # 隨機壓力測試
+│   ├── network_simulator.py       # 弱網模擬
+│   └── video_recorder.py          # 測試錄影
 ├── reports/                      # 測試報告輸出
 │   └── test_results.db           # ResultDB (SQLite)
 ├── screenshots/                  # 截圖輸出 (含差異圖)

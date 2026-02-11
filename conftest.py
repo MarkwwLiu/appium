@@ -209,6 +209,44 @@ def soft_assert():
     return _soft_assert
 
 
+# ── 新增功能 Fixtures ──
+
+@pytest.fixture
+def network_mock():
+    """Network Mock fixture：API 攔截與模擬回應"""
+    from utils.network_mock import NetworkMock
+    mock = NetworkMock()
+    mock.start()
+    yield mock
+    mock.stop()
+
+
+@pytest.fixture
+def network_condition(driver, platform):
+    """弱網模擬 fixture：2G/3G/離線/自訂"""
+    from utils.network_simulator import NetworkSimulator
+    sim = NetworkSimulator(driver, platform=platform)
+    yield sim
+    sim.reset()
+
+
+@pytest.fixture
+def video_recorder(driver, platform):
+    """測試錄影 fixture：自動錄影"""
+    from utils.video_recorder import VideoRecorder
+    recorder = VideoRecorder(driver, platform=platform)
+    yield recorder
+    if recorder.is_recording:
+        recorder.stop_and_discard()
+
+
+@pytest.fixture
+def monkey(driver):
+    """Monkey 隨機測試 fixture"""
+    from utils.monkey_tester import MonkeyTester
+    return MonkeyTester(driver)
+
+
 # ── 頁面驗證 / Recovery Fixtures ──
 
 @pytest.fixture

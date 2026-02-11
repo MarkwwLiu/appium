@@ -40,6 +40,7 @@ from core.page_validator import PageValidator, rule
 from core.plugin_manager import Plugin, plugin_manager
 from core.recovery import recovery_manager
 from core.result_db import result_db
+from core.self_healing import SelfHealer, SelfHealingMiddleware
 
 __all__ = [
     # Driver / Page / Component
@@ -63,6 +64,8 @@ __all__ = [
     "env",
     "recovery_manager",
     "result_db",
+    "SelfHealer",
+    "SelfHealingMiddleware",
     # Exceptions
     "AppiumFrameworkError",
     "DriverError",
