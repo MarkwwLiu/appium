@@ -5,8 +5,8 @@ pytest 全域 fixtures
 - driver fixture：每個測試自動建立/銷毀 Appium driver
 - 失敗時自動截圖（含 Allure 報告附件）
 - 命令列參數支援 (--platform)
-- api_client fixture：API + UI 混合測試
-- element_helper fixture：元素探索工具
+- 各工具模組 fixtures
+- 失敗時自動收集裝置 log
 """
 
 import pytest
@@ -15,6 +15,9 @@ from core.driver_manager import DriverManager
 from utils.logger import logger
 from utils.screenshot import take_screenshot
 from utils.allure_helper import attach_screenshot, attach_text
+
+# 載入自訂報告 plugin
+from utils import report_plugin  # noqa: F401
 
 
 def pytest_addoption(parser):
@@ -51,14 +54,7 @@ def driver(platform):
 
 @pytest.fixture
 def api_client():
-    """
-    API client fixture，用於混合測試。
-
-    用法（在測試中）：
-        def test_api_then_ui(self, driver, api_client):
-            api_client.post("/users", {"name": "test"})
-            ...
-    """
+    """API client fixture：API + UI 混合測試"""
     from utils.api_client import ApiClient
     import os
 
@@ -69,21 +65,14 @@ def api_client():
 
 @pytest.fixture
 def element_helper(driver):
-    """
-    元素探索工具 fixture，用於開發/除錯。
-
-    用法（在測試中）：
-        def test_debug(self, driver, element_helper):
-            element_helper.dump_page("debug.xml")
-            element_helper.find_all_ids()
-    """
+    """元素探索工具 fixture"""
     from utils.element_helper import ElementHelper
     return ElementHelper(driver)
 
 
 @pytest.fixture
 def gesture(driver):
-    """手勢操作 fixture：長按、雙擊、拖放、縮放、滑動搜尋"""
+    """手勢操作 fixture：長按、雙擊、拖放、縮放"""
     from utils.gesture_helper import GestureHelper
     return GestureHelper(driver)
 
@@ -102,9 +91,47 @@ def device(driver):
     return DeviceHelper(driver)
 
 
+@pytest.fixture
+def webview(driver):
+    """WebView 切換 fixture：Native / WebView context 切換"""
+    from utils.webview_helper import WebViewHelper
+    return WebViewHelper(driver)
+
+
+@pytest.fixture
+def a11y(driver):
+    """無障礙測試 fixture：content-description、觸控區域檢查"""
+    from utils.accessibility_helper import AccessibilityHelper
+    return AccessibilityHelper(driver)
+
+
+@pytest.fixture
+def biometric(driver):
+    """生物辨識模擬 fixture：Touch ID / Face ID / 指紋"""
+    from utils.biometric_helper import BiometricHelper
+    return BiometricHelper(driver)
+
+
+@pytest.fixture
+def image_compare(driver):
+    """視覺回歸測試 fixture：截圖比對"""
+    from utils.image_compare import ImageCompare
+    return ImageCompare(driver)
+
+
+@pytest.fixture
+def log_collector(platform):
+    """裝置 log 收集 fixture：自動啟停"""
+    from utils.log_collector import LogCollector
+    collector = LogCollector(platform=platform)
+    collector.start()
+    yield collector
+    collector.stop()
+
+
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """測試失敗時自動截圖（同時支援本地儲存與 Allure 報告）"""
+    """測試失敗時自動截圖 + 收集裝置 log"""
     outcome = yield
     report = outcome.get_result()
 
@@ -116,3 +143,8 @@ def pytest_runtest_makereport(item, call):
             take_screenshot(driver, f"FAIL_{test_name}")
             attach_screenshot(driver, f"失敗截圖: {test_name}")
             attach_text(driver.page_source, "頁面結構 (XML)")
+
+        # 儲存裝置 log
+        collector = item.funcargs.get("log_collector")
+        if collector:
+            collector.save(f"FAIL_{item.name}")

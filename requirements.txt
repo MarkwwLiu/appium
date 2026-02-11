@@ -17,6 +17,10 @@ requests>=2.31.0
 # pip install pytest-xdist
 # pytest-xdist>=3.5.0
 
+# 視覺回歸測試 (選裝)
+# pip install Pillow
+# Pillow>=10.0.0
+
 # Allure 報告 (選裝)
 # pip install allure-pytest
 # allure-pytest>=2.13.0

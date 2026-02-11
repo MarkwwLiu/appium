@@ -668,6 +668,151 @@ appium -p 4724 &
 pytest -n 2
 ```
 
+### 14. 視覺回歸測試
+
+截圖比對，偵測 UI 是否有非預期變動：
+
+```python
+def test_ui_unchanged(self, driver, image_compare):
+    # 第一次執行：自動建立 baseline
+    # 之後執行：與 baseline 比對，差異超過 2% 即失敗
+    image_compare.assert_match("home_page")
+
+    # 手動儲存 baseline
+    image_compare.save_baseline("login_page")
+
+    # 取得比對結果（不 assert）
+    result = image_compare.compare("home_page")
+    print(f"差異: {result['diff_percent']:.2%}")
+```
+
+需安裝 `pip install Pillow`，差異圖會自動儲存到 `screenshots/diff/`。
+
+### 15. WebView 切換 (Hybrid App)
+
+Native 與 WebView 之間切換操作：
+
+```python
+def test_hybrid_app(self, driver, webview):
+    webview.wait_for_webview()             # 等待 WebView 出現並切換
+    webview.click_by_css("#login-btn")     # CSS selector 操作
+    webview.execute_js("return document.title")  # 執行 JS
+    webview.switch_to_native()             # 切回 Native
+```
+
+### 16. 裝置 Log 收集
+
+自動收集 logcat / syslog，測試失敗時自動儲存：
+
+```python
+def test_with_logs(self, driver, log_collector):
+    # log_collector 會自動啟動/停止
+    # 測試失敗時自動儲存到 reports/device_logs/
+
+    # 手動搜尋 log
+    errors = log_collector.search_errors()
+    crashes = log_collector.get_crash_logs()
+    log_collector.search("NetworkException")
+```
+
+### 17. 無障礙 (Accessibility) 測試
+
+自動檢查 App 的無障礙合規性：
+
+```python
+def test_accessibility(self, driver, a11y):
+    result = a11y.full_audit()
+    assert result["overall_pass"], "無障礙稽核未通過"
+
+    # 單獨檢查
+    a11y.check_content_descriptions()   # 是否都有 content-description
+    a11y.check_touch_target_size()      # 觸控區域是否 >= 48x48
+    a11y.check_text_size()              # 文字是否太小
+```
+
+### 18. 生物辨識模擬
+
+模擬 Touch ID / Face ID / 指紋：
+
+```python
+def test_fingerprint_login(self, driver, biometric):
+    biometric.simulate_auth_success()   # 跨平台：模擬驗證成功
+    biometric.simulate_auth_failure()   # 跨平台：模擬驗證失敗
+
+    # iOS 專用
+    biometric.ios_face_id_match()
+    biometric.ios_face_id_no_match()
+
+    # Android 專用
+    biometric.android_fingerprint_match(finger_id=1)
+```
+
+### 19. 自動測試產生器 (核心功能)
+
+**連接模擬器，自動抓取頁面元素，一鍵產生 Page Object + 正向/反向/邊界測試資料 + 測試案例：**
+
+```bash
+# 確保 Appium Server 啟動、模擬器開啟並停在目標頁面
+python -m utils.auto_test_generator --page login --platform android
+```
+
+會自動產生 3 個檔案：
+
+```
+pages/login_page.py            ← Page Object (自動抓取 locators)
+test_data/login_test_data.json ← 正向/反向/邊界測試資料
+tests/test_login_auto.py       ← pytest 測試案例 (含 parametrize)
+```
+
+**自動產生的測試資料範例：**
+
+| 類型 | 說明 | 範例 |
+|------|------|------|
+| **正向** | 有效資料 | email=test@example.com, password=Abc123!@# |
+| **反向-空白** | 某欄位為空 | email="", password=Abc123!@# |
+| **反向-XSS** | 特殊字元注入 | `<script>alert(1)</script>` |
+| **反向-SQLi** | SQL injection | `' OR '1'='1` |
+| **邊界-最短** | 1 字元 | email=a |
+| **邊界-最長** | 256 字元 | email=aaa...aaa (256) |
+| **邊界-Unicode** | 中文/Emoji | email=測試用戶名稱 |
+
+也可以在測試中程式化使用：
+
+```python
+from utils.auto_test_generator import AutoTestGenerator
+
+def test_scan_and_verify(self, driver):
+    gen = AutoTestGenerator(driver)
+    scan = gen.scan_page("settings")
+    print(f"找到 {len(scan.input_fields)} 個輸入框")
+    gen.generate_all("settings")  # 一鍵產生全部
+```
+
+### 20. 自訂測試報告
+
+終端機自動輸出豐富的測試摘要（已自動啟用）：
+
+```
+============================================================
+  APPIUM 測試報告摘要
+============================================================
+
+  總計:   50 個測試
+  通過:   48
+  失敗:   2
+  跳過:   0
+  通過率: 96.0%
+  總耗時: 120.5 秒
+
+  --- 失敗測試 ---
+    FAIL  tests/test_login.py::TestLogin::test_login_empty  (1.23s)
+
+  --- 最慢的測試 (Top 5) ---
+    5.21s  tests/test_home.py::TestHome::test_data_loaded
+    ...
+============================================================
+```
+
 ---
 
 ## 完整目錄結構
@@ -675,42 +820,49 @@ pytest -n 2
 ```
 appium/
 ├── .github/workflows/
-│   └── appium-test.yml         # CI/CD pipeline
+│   └── appium-test.yml            # CI/CD pipeline
 ├── config/
-│   ├── config.py               # 全域設定
-│   ├── android_caps.json       # Android capabilities
-│   ├── ios_caps.json           # iOS capabilities
-│   └── devices.json            # 多裝置平行測試設定
+│   ├── config.py                  # 全域設定
+│   ├── android_caps.json          # Android capabilities
+│   ├── ios_caps.json              # iOS capabilities
+│   └── devices.json               # 多裝置平行測試設定
 ├── core/
-│   ├── driver_manager.py       # Driver 生命週期
-│   └── base_page.py            # Page Object 基底
+│   ├── driver_manager.py          # Driver 生命週期
+│   └── base_page.py               # Page Object 基底
 ├── pages/
-│   ├── login_page.py           # 登入頁面
-│   └── home_page.py            # 首頁
+│   ├── login_page.py              # 登入頁面
+│   └── home_page.py               # 首頁
 ├── tests/
-│   ├── test_login.py           # 登入測試
-│   ├── test_home.py            # 首頁測試
+│   ├── test_login.py              # 登入測試
+│   ├── test_home.py               # 首頁測試
 │   ├── test_login_data_driven.py  # 資料驅動測試
-│   └── test_with_decorators.py # Decorator 範例
+│   └── test_with_decorators.py    # Decorator 範例
 ├── test_data/
-│   └── login_data.json         # 測試資料
+│   └── login_data.json            # 測試資料
 ├── utils/
-│   ├── logger.py               # 日誌
-│   ├── screenshot.py           # 截圖
-│   ├── wait_helper.py          # 等待/重試
-│   ├── data_loader.py          # 資料載入 (JSON/CSV)
-│   ├── data_factory.py         # 隨機測試資料工廠
-│   ├── api_client.py           # REST API 客戶端
-│   ├── decorators.py           # 自訂裝飾器
-│   ├── element_helper.py       # 元素探索工具
-│   ├── allure_helper.py        # Allure 報告整合
-│   ├── gesture_helper.py       # 手勢操作 (長按/縮放/拖放)
-│   ├── app_manager.py          # App 生命週期管理
-│   ├── device_helper.py        # 裝置控制 (旋轉/網路/鍵盤)
-│   ├── perf_monitor.py         # 效能監控 (CPU/記憶體/電量)
-│   ├── notifier.py             # Slack/Webhook 通知
-│   └── parallel.py             # 多裝置平行測試
-├── conftest.py                 # pytest fixtures
+│   ├── logger.py                  # 日誌
+│   ├── screenshot.py              # 截圖
+│   ├── wait_helper.py             # 等待/重試
+│   ├── data_loader.py             # 資料載入 (JSON/CSV)
+│   ├── data_factory.py            # 隨機測試資料工廠
+│   ├── api_client.py              # REST API 客戶端
+│   ├── decorators.py              # 自訂裝飾器
+│   ├── element_helper.py          # 元素探索工具
+│   ├── allure_helper.py           # Allure 報告整合
+│   ├── gesture_helper.py          # 手勢操作
+│   ├── app_manager.py             # App 生命週期管理
+│   ├── device_helper.py           # 裝置控制
+│   ├── perf_monitor.py            # 效能監控
+│   ├── notifier.py                # Slack/Webhook 通知
+│   ├── parallel.py                # 多裝置平行測試
+│   ├── image_compare.py           # 視覺回歸測試
+│   ├── webview_helper.py          # WebView 切換 (Hybrid)
+│   ├── log_collector.py           # 裝置 Log 收集
+│   ├── accessibility_helper.py    # 無障礙測試
+│   ├── biometric_helper.py        # 生物辨識模擬
+│   ├── report_plugin.py           # 自訂測試報告
+│   └── auto_test_generator.py     # 自動測試產生器
+├── conftest.py                    # pytest fixtures
 ├── pytest.ini
 ├── requirements.txt
 └── .gitignore
