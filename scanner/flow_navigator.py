@@ -210,7 +210,7 @@ class FlowNavigator:
                 target_page=target,
                 steps_taken=0,
                 actual_page=from_page,
-                error=f"No path from '{from_page}' to '{target}'",
+                error=f"找不到從 '{from_page}' 到 '{target}' 的路徑",
             )
 
         logger.info(
@@ -234,7 +234,7 @@ class FlowNavigator:
                     steps_taken=steps_done,
                     actual_page=actual,
                     path=path,
-                    error=f"Step failed: {step.action}",
+                    error=f"步驟失敗: {step.action}",
                 )
             steps_done += 1
 

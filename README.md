@@ -69,6 +69,273 @@
 
 ---
 
+## 流程圖
+
+### 測試執行生命週期
+
+```mermaid
+flowchart TD
+    A[pytest 啟動] --> B[pytest_configure]
+    B --> B1[自動掃描 plugins/ 目錄]
+    B1 --> B2[載入 Plugin: retry / timing / recovery / fail_handler]
+    B --> C[pytest_sessionstart]
+    C --> C1[ResultDB: start_run]
+    C --> C2[EnvManager: 載入環境設定]
+
+    C2 --> D[每個測試]
+    D --> D1[pytest_runtest_setup]
+    D1 --> D1a[Plugin: emit_test_start]
+    D1a --> D1b[ElementCache: clear]
+    D1b --> D2[建立 Driver]
+    D2 --> D3[執行測試邏輯]
+
+    D3 -->|通過| E1[Plugin: emit_test_pass]
+    D3 -->|失敗| E2[自動截圖 + 頁面 XML]
+    E2 --> E3[Plugin: emit_test_fail]
+    E3 --> E4[FailHandler: 保全失敗現場]
+    D3 -->|跳過| E5[Plugin: emit_test_skip]
+
+    E1 --> F[ResultDB: record]
+    E4 --> F
+    E5 --> F
+    F --> G[銷毀 Driver]
+    G --> D
+
+    D -->|所有測試完成| H[pytest_sessionfinish]
+    H --> H1[ResultDB: end_run]
+    H1 --> I[產出報告: HTML + Allure + 終端摘要]
+```
+
+### Plugin / Middleware 處理鏈
+
+```mermaid
+flowchart LR
+    subgraph 測試程式碼
+        T[page.click 或 page.input_text]
+    end
+
+    subgraph Middleware 鏈
+        T --> MW1[TimingMiddleware<br/>記錄耗時]
+        MW1 --> MW2[RetryMiddleware<br/>失敗自動重試]
+        MW2 --> MW3[RecoveryMiddleware<br/>失敗→恢復→重試]
+        MW3 --> MW4[自訂 Middleware<br/>使用者擴充]
+    end
+
+    subgraph BasePage 核心操作
+        MW4 --> OP[ElementCache 查詢<br/>↓<br/>WebDriverWait<br/>↓<br/>實際操作元素]
+    end
+
+    subgraph 失敗處理
+        OP -->|成功| R1[回傳結果]
+        OP -->|失敗| R2[RecoveryManager<br/>嘗試恢復]
+        R2 -->|恢復成功| OP
+        R2 -->|恢復失敗| R3[拋出例外]
+    end
+```
+
+### Recovery 恢復流程
+
+```mermaid
+flowchart TD
+    START[操作失敗] --> CHK{Recovery 啟用?}
+    CHK -->|否| FAIL[拋出原始例外]
+    CHK -->|是| LOOP[開始嘗試策略]
+
+    LOOP --> S1[策略 1: 權限彈窗<br/>priority=10]
+    S1 -->|找到並點擊| OK[恢復成功]
+    S1 -->|未找到| S2[策略 2: ANR 對話框<br/>priority=15]
+    S2 -->|找到並點擊| OK
+    S2 -->|未找到| S3[策略 3: 系統彈窗<br/>priority=20]
+    S3 -->|找到並關閉| OK
+    S3 -->|未找到| S4[策略 4: WebView 逃脫<br/>priority=35]
+    S4 -->|切回 Native| OK
+    S4 -->|非 WebView| S5[策略 5: Crash 重啟<br/>priority=40]
+    S5 -->|偵測到 crash| OK
+    S5 -->|無 crash| S6[策略 6: 返回鍵<br/>priority=50]
+    S6 -->|按返回成功| OK
+    S6 -->|仍失敗| RETRY{嘗試次數 < 上限?}
+
+    RETRY -->|是| LOOP
+    RETRY -->|否| FAIL
+
+    OK --> WAIT[等待 1s 畫面穩定]
+    WAIT --> REDO[重試原操作]
+```
+
+### Scanner 智慧掃描流程
+
+```mermaid
+flowchart TD
+    A[連線模擬器] --> B[掃描當前頁面]
+    B --> C[PageAnalyzer 分析]
+
+    subgraph 語意分析
+        C --> C1[掃描所有元素<br/>resource_id / text / hint / class]
+        C1 --> C2[推斷欄位語意<br/>email? password? phone?]
+        C2 --> C3[推斷按鈕語意<br/>submit? cancel? back?]
+        C3 --> C4[推斷頁面類型<br/>login? register? search?]
+    end
+
+    C4 --> D[SmartTestData 產生測試資料]
+
+    subgraph 智慧資料產生
+        D --> D1[正向: 根據語意產有效值<br/>email→test@example.com]
+        D --> D2[反向: 根據語意產無效值<br/>email→缺@、雙@@、中文]
+        D --> D3[邊界: 最短/最長/Unicode/Emoji]
+        D --> D4[安全: XSS/SQLi/路徑穿越]
+    end
+
+    D1 & D2 & D3 & D4 --> E{自動探索模式?}
+    E -->|否| F[匯出結果]
+    E -->|是| G[填入正向值 + 點擊提交]
+    G --> H[等待畫面穩定]
+    H --> I[重新掃描頁面]
+    I --> J{是否新頁面?}
+    J -->|是| K[記錄轉場<br/>page_change / error_shown / dialog]
+    J -->|否| L[記錄 same_page / content_change]
+    K & L --> M{達到上限?}
+    M -->|否| G
+    M -->|是| F
+
+    F --> F1[session.json — 完整掃描結果]
+    F --> F2[pages/*.py — Page Object]
+    F --> F3[tests/*.py — pytest 測試案例]
+    F --> F4[test_data/*.json — 測試資料]
+    F --> F5[flow_map.md — Mermaid 轉場圖]
+    F --> F6[report.html — HTML 報告]
+```
+
+### FlowNavigator 自動導航
+
+```mermaid
+flowchart TD
+    A[載入 session.json] --> B[建立有向圖<br/>頁面 → 轉場 → 頁面]
+    B --> C[輸入目標頁面名稱]
+    C --> D[偵測當前頁面<br/>PageAnalyzer.snapshot]
+    D --> E{已在目標頁面?}
+    E -->|是| OK[導航完成]
+    E -->|否| F[BFS 搜尋最短路徑]
+    F --> G{找到路徑?}
+    G -->|否| FAIL[回報: 無法到達]
+    G -->|是| H[取得路徑步驟列表]
+
+    H --> I[執行步驟 N]
+    I --> I1[填入欄位值<br/>ID / AccessibilityID / XPath]
+    I1 --> I2[點擊按鈕]
+    I2 --> I3[等待 2s]
+    I3 --> I4[重新偵測當前頁面]
+    I4 --> J{到達預期頁面?}
+    J -->|是| K{還有下一步?}
+    K -->|是| I
+    K -->|否| OK
+    J -->|否| L{重試次數 < 上限?}
+    L -->|是| I
+    L -->|否| FAIL
+```
+
+### ResultDB 資料流
+
+```mermaid
+flowchart LR
+    subgraph 寫入
+        T1[pytest_sessionstart] -->|start_run| DB[(SQLite<br/>test_results.db)]
+        T2[每個測試結束] -->|record| DB
+        T3[pytest_sessionfinish] -->|end_run| DB
+    end
+
+    subgraph 查詢
+        DB --> Q1[get_history<br/>某測試最近 N 次結果]
+        DB --> Q2[get_flaky_tests<br/>時過時不過的測試]
+        DB --> Q3[compare_runs<br/>兩次 run 的差異]
+        DB --> Q4[get_pass_rate_trend<br/>通過率趨勢]
+    end
+
+    subgraph 輸出
+        Q1 & Q2 & Q3 & Q4 --> R1[HTML 報告<br/>趨勢圖 + Flaky 列表]
+        Q3 --> R2[回歸比對<br/>新增失敗 / 修復 / 持續失敗]
+    end
+```
+
+### 模組完整關係圖
+
+```mermaid
+graph TB
+    subgraph 測試層
+        TEST[tests/*.py<br/>pytest 測試案例]
+    end
+
+    subgraph 頁面層
+        PAGE[pages/*.py<br/>Page Object]
+        COMP[Component<br/>可組合 UI 元件]
+    end
+
+    subgraph 核心層
+        BP[BasePage<br/>基底頁面操作]
+        DM[DriverManager<br/>Driver 生命週期]
+        ASSERT[Assertions<br/>語意化斷言]
+        PV[PageValidator<br/>宣告式驗證]
+    end
+
+    subgraph 基礎設施層
+        EB[EventBus<br/>事件發佈訂閱]
+        PM[PluginManager<br/>Plugin 載入]
+        MW[Middleware<br/>操作攔截鏈]
+        EC[ElementCache<br/>元素快取]
+        RM[RecoveryManager<br/>異常恢復]
+        RDB[ResultDB<br/>結果儲存]
+        ENV[EnvManager<br/>多環境設定]
+        EX[Exceptions<br/>例外體系]
+    end
+
+    subgraph Plugin 層
+        P1[RetryPlugin]
+        P2[TimingPlugin]
+        P3[RecoveryPlugin]
+        P4[FailHandlerPlugin]
+    end
+
+    subgraph Scanner 模組
+        SA[PageAnalyzer<br/>語意分析]
+        STD[SmartTestData<br/>智慧資料]
+        FR[FlowRecorder<br/>流程錄製]
+        FN[FlowNavigator<br/>自動導航]
+        HR[HtmlReport<br/>報告產生]
+        SR[SessionRunner<br/>掃描控制]
+    end
+
+    subgraph Generator 模組
+        GE[GeneratorEngine<br/>專案產生器]
+    end
+
+    TEST --> PAGE
+    PAGE --> BP
+    PAGE --> COMP
+    BP --> MW
+    BP --> EC
+    BP --> EX
+    MW --> P1 & P2 & P3
+    P3 --> RM
+    DM --> EB
+    PM --> P1 & P2 & P3 & P4
+    TEST -.-> ASSERT
+    TEST -.-> PV
+    TEST -.-> RDB
+
+    SR --> SA --> STD
+    SR --> FR --> FN
+    SR --> HR
+    FR --> SA
+
+    GE -.->|產出到外部目錄| TEST
+
+    style 核心層 fill:#e3f2fd
+    style 基礎設施層 fill:#f3e5f5
+    style Scanner 模組 fill:#e8f5e9
+    style Plugin 層 fill:#fff3e0
+```
+
+---
+
 ## 目錄結構
 
 ```
