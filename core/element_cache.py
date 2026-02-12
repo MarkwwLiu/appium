@@ -11,6 +11,7 @@ Element Cache — 元素快取加速
 - TTL 過期
 - 頁面切換時自動清除
 - 手動清除
+- 平行測試安全（thread-local 隔離）
 
 用法：
     # BasePage 已內建，正常使用即可
@@ -42,22 +43,33 @@ class CacheEntry:
 
 class ElementCache:
     """
-    元素快取
+    元素快取（thread-local 隔離）
 
     策略:
     - 以 locator tuple 為 key
     - 存取時自動檢查 stale (element.is_displayed())
     - TTL 預設 30 秒，超過自動失效
     - 頁面變更（page source hash 改變）自動清除
+    - 每個執行緒有獨立的快取空間，避免平行測試衝突
     """
 
     def __init__(self, ttl: float = 30.0, max_size: int = 100):
-        self._cache: dict[tuple, CacheEntry] = {}
         self._ttl = ttl
         self._max_size = max_size
         self._enabled = True
-        self._lock = threading.Lock()
-        self._stats = {"hits": 0, "misses": 0, "evictions": 0}
+        self._local = threading.local()
+
+    def _get_store(self) -> dict[tuple, CacheEntry]:
+        """取得當前執行緒的快取空間"""
+        if not hasattr(self._local, "cache"):
+            self._local.cache = {}
+        return self._local.cache
+
+    def _get_stats(self) -> dict[str, int]:
+        """取得當前執行緒的統計"""
+        if not hasattr(self._local, "stats"):
+            self._local.stats = {"hits": 0, "misses": 0, "evictions": 0}
+        return self._local.stats
 
     @property
     def enabled(self) -> bool:
@@ -79,73 +91,72 @@ class ElementCache:
         if not self._enabled:
             return None
 
-        with self._lock:
-            entry = self._cache.get(locator)
-            if entry is None:
-                self._stats["misses"] += 1
-                return None
+        cache = self._get_store()
+        stats = self._get_stats()
 
-            # TTL 檢查
-            if time.time() - entry.created_at > self._ttl:
-                del self._cache[locator]
-                self._stats["evictions"] += 1
-                self._stats["misses"] += 1
-                return None
-
-            # Stale 檢查
-            try:
-                if entry.element.is_displayed() or entry.element.is_enabled():
-                    entry.hit_count += 1
-                    self._stats["hits"] += 1
-                    return entry.element
-            except Exception:
-                pass
-
-            # Stale — 移除
-            del self._cache[locator]
-            self._stats["evictions"] += 1
-            self._stats["misses"] += 1
+        entry = cache.get(locator)
+        if entry is None:
+            stats["misses"] += 1
             return None
+
+        # TTL 檢查
+        if time.time() - entry.created_at > self._ttl:
+            del cache[locator]
+            stats["evictions"] += 1
+            stats["misses"] += 1
+            return None
+
+        # Stale 檢查
+        try:
+            if entry.element.is_displayed() or entry.element.is_enabled():
+                entry.hit_count += 1
+                stats["hits"] += 1
+                return entry.element
+        except Exception:
+            pass
+
+        # Stale — 移除
+        del cache[locator]
+        stats["evictions"] += 1
+        stats["misses"] += 1
+        return None
 
     def put(self, locator: tuple, element: WebElement) -> None:
         """存入快取"""
         if not self._enabled:
             return
 
-        with self._lock:
-            # 容量控制：LRU 淘汰
-            if len(self._cache) >= self._max_size and locator not in self._cache:
-                oldest_key = min(
-                    self._cache, key=lambda k: self._cache[k].created_at
-                )
-                del self._cache[oldest_key]
-                self._stats["evictions"] += 1
+        cache = self._get_store()
+        stats = self._get_stats()
 
-            self._cache[locator] = CacheEntry(
-                element=element, locator=locator
-            )
+        # 容量控制：LRU 淘汰
+        if len(cache) >= self._max_size and locator not in cache:
+            oldest_key = min(cache, key=lambda k: cache[k].created_at)
+            del cache[oldest_key]
+            stats["evictions"] += 1
+
+        cache[locator] = CacheEntry(element=element, locator=locator)
 
     def invalidate(self, locator: tuple) -> None:
         """清除特定 locator 的快取"""
-        with self._lock:
-            self._cache.pop(locator, None)
+        self._get_store().pop(locator, None)
 
     def clear(self) -> None:
-        """清除所有快取"""
-        with self._lock:
-            self._cache.clear()
+        """清除當前執行緒的所有快取"""
+        self._get_store().clear()
         logger.debug("Element cache 已清除")
 
     @property
     def size(self) -> int:
-        return len(self._cache)
+        return len(self._get_store())
 
     @property
     def stats(self) -> dict:
-        total = self._stats["hits"] + self._stats["misses"]
-        rate = self._stats["hits"] / total if total > 0 else 0.0
-        return {**self._stats, "total": total, "hit_rate": rate}
+        s = self._get_stats()
+        total = s["hits"] + s["misses"]
+        rate = s["hits"] / total if total > 0 else 0.0
+        return {**s, "total": total, "hit_rate": rate}
 
 
-# 全域 singleton
+# 全域 singleton (每個執行緒自動隔離)
 element_cache = ElementCache()

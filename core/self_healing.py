@@ -60,11 +60,24 @@ class SelfHealer:
     當原始 locator 找不到元素時，分析頁面結構嘗試其他定位策略。
     """
 
-    # 歷史修復記錄 (類級別共享)
-    heal_history: list[HealRecord] = []
+    # 歷史修復記錄 (類級別共享，限制容量避免記憶體洩漏)
+    _heal_history: list[HealRecord] = []
+    _max_history: int = 500
 
     def __init__(self, driver: "WebDriver"):
         self._driver = driver
+
+    @classmethod
+    def _append_history(cls, record: HealRecord) -> None:
+        """安全地新增修復記錄（含容量控制）"""
+        cls._heal_history.append(record)
+        if len(cls._heal_history) > cls._max_history:
+            cls._heal_history = cls._heal_history[-cls._max_history:]
+
+    @property
+    def heal_history(self) -> list[HealRecord]:
+        """向後相容：取得修復歷史"""
+        return self._heal_history
 
     def find_element(self, locator: tuple[str, str], timeout: float = 3.0) -> "WebElement":
         """
@@ -112,7 +125,7 @@ class SelfHealer:
                         strategy=strategy_name,
                         page_context=self._get_page_context(),
                     )
-                    SelfHealer.heal_history.append(record)
+                    SelfHealer._append_history(record)
                     logger.warning(
                         f"[SelfHealing] 自動修復成功!\n"
                         f"  原始: {locator}\n"
@@ -241,7 +254,7 @@ class SelfHealer:
     @classmethod
     def get_report(cls) -> str:
         """產生修復報告"""
-        if not cls.heal_history:
+        if not cls._heal_history:
             return "無自動修復記錄"
 
         lines = [
@@ -250,7 +263,7 @@ class SelfHealer:
             "  Locator 自動修復報告",
             "=" * 70,
         ]
-        for i, record in enumerate(cls.heal_history, 1):
+        for i, record in enumerate(cls._heal_history, 1):
             lines.extend([
                 f"\n  [{i}] {record.strategy}",
                 f"      原始: {record.original_locator}",
@@ -263,7 +276,7 @@ class SelfHealer:
     @classmethod
     def clear_history(cls) -> None:
         """清除修復歷史"""
-        cls.heal_history.clear()
+        cls._heal_history.clear()
 
 
 class SelfHealingMiddleware:

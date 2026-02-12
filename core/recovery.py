@@ -137,40 +137,61 @@ class RecoveryManager:
     # ── 內建策略 ──
 
     def _register_defaults(self):
-        """註冊內建恢復策略"""
+        """註冊內建恢復策略（Android + iOS 雙平台）"""
 
         @self.register("permission_dialog", priority=10)
         def _handle_permission(driver) -> bool:
-            """處理 Android 權限彈窗"""
-            permission_buttons = [
+            """處理權限彈窗（Android + iOS）"""
+            # Android 權限按鈕
+            android_buttons = [
                 "com.android.packageinstaller:id/permission_allow_button",
                 "com.android.permissioncontroller:id/permission_allow_button",
                 "com.android.permissioncontroller:id/permission_allow_foreground_only_button",
                 "com.android.packageinstaller:id/permission_allow_always_button",
             ]
-            for btn_id in permission_buttons:
+            for btn_id in android_buttons:
                 try:
                     el = driver.find_element(AppiumBy.ID, btn_id)
                     if el.is_displayed():
                         el.click()
-                        logger.info("[Recovery] 已點擊權限允許按鈕")
+                        logger.info("[Recovery] 已點擊 Android 權限允許按鈕")
                         return True
                 except Exception:
                     continue
+
+            # iOS 系統權限彈窗（通知、位置、相機、麥克風等）
+            ios_allow_labels = [
+                "Allow", "允許", "OK", "好",
+                "Allow While Using App", "使用 App 時允許",
+                "Allow Once", "允許一次",
+            ]
+            for label in ios_allow_labels:
+                try:
+                    el = driver.find_element(
+                        AppiumBy.ACCESSIBILITY_ID, label
+                    )
+                    if el.is_displayed():
+                        el.click()
+                        logger.info(f"[Recovery] 已點擊 iOS 權限按鈕: {label}")
+                        return True
+                except Exception:
+                    continue
+
             return False
 
         @self.register("anr_dialog", priority=15)
         def _handle_anr(driver) -> bool:
-            """處理 ANR 對話框"""
+            """處理 ANR 對話框（Android）"""
+            anr_texts = ["等待", "Wait", "Close app", "關閉應用程式", "关闭应用"]
+            xpath_parts = " or ".join(f'@text="{t}"' for t in anr_texts)
             try:
-                # "等待" 或 "關閉應用程式"
                 wait_btn = driver.find_element(
                     AppiumBy.XPATH,
-                    '//*[@text="等待" or @text="Wait" or @text="等待"]'
+                    f'//*[{xpath_parts}]'
                 )
                 if wait_btn.is_displayed():
                     wait_btn.click()
-                    logger.info("[Recovery] 已點擊 ANR 等待按鈕")
+                    logger.info("[Recovery] 已點擊 ANR 等待/關閉按鈕")
                     return True
             except Exception:
                 pass
@@ -178,76 +199,67 @@ class RecoveryManager:
 
         @self.register("system_dialog", priority=20)
         def _handle_system_dialog(driver) -> bool:
-            """處理各種系統彈窗（更新、評價等）"""
-            dismiss_patterns = [
-                '//*[@text="取消" or @text="Cancel" or @text="稍後"]',
-                '//*[@text="不用了" or @text="No thanks" or @text="略過"]',
-                '//*[@text="關閉" or @text="Close" or @text="Dismiss"]',
-                '//*[@text="OK" or @text="確定" or @text="Got it"]',
-                '//*[@resource-id="android:id/button2"]',  # 通常是取消
+            """處理各種系統彈窗 — 多語系支援（中/英/日/韓）"""
+            dismiss_texts = [
+                # 英文
+                "Cancel", "No thanks", "Dismiss", "Close", "OK",
+                "Got it", "Not Now", "Later", "Skip", "Deny",
+                # 繁體中文
+                "取消", "不用了", "關閉", "確定", "稍後", "略過",
+                # 簡體中文
+                "关闭", "确定", "稍后", "跳过",
+                # 日文
+                "キャンセル", "閉じる", "後で", "スキップ",
+                # 韓文
+                "취소", "닫기", "나중에", "건너뛰기",
             ]
-            for xpath in dismiss_patterns:
+            seen: set[str] = set()
+            unique_texts: list[str] = []
+            for t in dismiss_texts:
+                if t not in seen:
+                    seen.add(t)
+                    unique_texts.append(t)
+
+            for text in unique_texts:
                 try:
-                    el = driver.find_element(AppiumBy.XPATH, xpath)
+                    # @text 用於 Android, @label 用於 iOS
+                    el = driver.find_element(
+                        AppiumBy.XPATH, f'//*[@text="{text}" or @label="{text}"]'
+                    )
                     if el.is_displayed():
                         el.click()
-                        logger.info(f"[Recovery] 已關閉系統彈窗: {el.text}")
+                        logger.info(f"[Recovery] 已關閉系統彈窗: {text}")
                         return True
                 except Exception:
                     continue
-            return False
 
-        @self.register("crash_restart", priority=40)
-        def _handle_crash(driver) -> bool:
-            """App crash 後重啟"""
+            # Android 特定 resource-id（取消按鈕）
             try:
-                # 檢查是否有 "has stopped" 或 "已停止"
-                crash_indicators = [
-                    '//*[contains(@text,"has stopped")]',
-                    '//*[contains(@text,"已停止")]',
-                    '//*[contains(@text,"keeps stopping")]',
-                    '//*[contains(@text,"持續停止")]',
-                ]
-                for xpath in crash_indicators:
-                    try:
-                        el = driver.find_element(AppiumBy.XPATH, xpath)
-                        if el.is_displayed():
-                            # 點關閉
-                            try:
-                                close = driver.find_element(
-                                    AppiumBy.XPATH,
-                                    '//*[@text="Close" or @text="關閉" or @text="OK" or @text="確定"]'
-                                )
-                                close.click()
-                            except Exception:
-                                pass
-                            # 重啟 App
-                            driver.activate_app(
-                                driver.capabilities.get(
-                                    "appPackage",
-                                    driver.capabilities.get("bundleId", "")
-                                )
-                            )
-                            time.sleep(3)
-                            logger.info("[Recovery] App crash → 已重啟")
-                            return True
-                    except Exception:
-                        continue
+                el = driver.find_element(AppiumBy.ID, "android:id/button2")
+                if el.is_displayed():
+                    el.click()
+                    logger.info("[Recovery] 已點擊 android:id/button2 (取消)")
+                    return True
             except Exception:
                 pass
+
             return False
 
-        @self.register("back_button", priority=50)
-        def _handle_back(driver) -> bool:
-            """按返回鍵嘗試恢復"""
+        @self.register("ios_alert", priority=25)
+        def _handle_ios_alert(driver) -> bool:
+            """處理 iOS 系統 alert（使用 Appium 內建 API）"""
             try:
-                driver.back()
-                time.sleep(1)
-                # 檢查是否還在 App 中
-                source = driver.page_source
-                if source and len(source) > 100:
-                    logger.info("[Recovery] 已按返回鍵")
+                alert_text = driver.switch_to.alert.text
+                if alert_text:
+                    driver.switch_to.alert.accept()
+                    logger.info(f"[Recovery] 已接受 iOS alert: {alert_text}")
                     return True
+            except Exception:
+                pass
+            try:
+                driver.switch_to.alert.dismiss()
+                logger.info("[Recovery] 已關閉 iOS alert (dismiss)")
+                return True
             except Exception:
                 pass
             return False
@@ -260,6 +272,61 @@ class RecoveryManager:
                 if context and "WEBVIEW" in context.upper():
                     driver.switch_to.context("NATIVE_APP")
                     logger.info("[Recovery] 已從 WebView 切回 Native")
+                    return True
+            except Exception:
+                pass
+            return False
+
+        @self.register("crash_restart", priority=40)
+        def _handle_crash(driver) -> bool:
+            """App crash 後重啟（Android + iOS）"""
+            crash_indicators = [
+                '//*[contains(@text,"has stopped")]',
+                '//*[contains(@text,"已停止")]',
+                '//*[contains(@text,"keeps stopping")]',
+                '//*[contains(@text,"持續停止")]',
+                '//*[contains(@label,"Problem Report")]',
+            ]
+            for xpath in crash_indicators:
+                try:
+                    el = driver.find_element(AppiumBy.XPATH, xpath)
+                    if el.is_displayed():
+                        close_xpaths = [
+                            '//*[@text="Close" or @text="關閉" or @text="OK" or @text="確定"]',
+                            '//*[@label="Close" or @label="OK"]',
+                        ]
+                        for close_xpath in close_xpaths:
+                            try:
+                                close = driver.find_element(
+                                    AppiumBy.XPATH, close_xpath
+                                )
+                                close.click()
+                                break
+                            except Exception:
+                                continue
+
+                        app_id = driver.capabilities.get(
+                            "appPackage",
+                            driver.capabilities.get("bundleId", "")
+                        )
+                        if app_id:
+                            driver.activate_app(app_id)
+                            time.sleep(3)
+                            logger.info("[Recovery] App crash → 已重啟")
+                            return True
+                except Exception:
+                    continue
+            return False
+
+        @self.register("back_button", priority=50)
+        def _handle_back(driver) -> bool:
+            """按返回鍵嘗試恢復"""
+            try:
+                driver.back()
+                time.sleep(1)
+                source = driver.page_source
+                if source and len(source) > 100:
+                    logger.info("[Recovery] 已按返回鍵")
                     return True
             except Exception:
                 pass
