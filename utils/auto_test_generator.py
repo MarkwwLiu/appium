@@ -409,16 +409,20 @@ class AutoTestGenerator:
 
         code += textwrap.dedent(f'''
                     if data["expected"] == "success":
-                        # 正向：驗證操作成功
-                        pass  # TODO: 加入成功驗證邏輯
+                        # 正向：驗證操作成功 — 頁面應正常過渡或顯示成功提示
+                        assert page.is_page_displayed(), (
+                            f"[{{data['case_id']}}] {{data['description']}} - 正向操作後頁面異常"
+                        )
                     elif data["expected"] == "error":
                         # 反向：驗證顯示錯誤
                         assert page.is_page_displayed(), (
                             f"[{{data['case_id']}}] {{data['description']}} - 預期停留在頁面"
                         )
                     else:
-                        # 邊界：記錄行為（不一定是錯誤）
-                        pass  # TODO: 根據需求調整斷言
+                        # 邊界：App 不應 crash，頁面仍可操作
+                        assert page.is_page_displayed(), (
+                            f"[{{data['case_id']}}] {{data['description']}} - App 可能已 crash"
+                        )
 
                 @pytest.mark.smoke
                 def test_page_displayed(self, driver):

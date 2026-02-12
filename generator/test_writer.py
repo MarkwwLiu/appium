@@ -151,8 +151,10 @@ def pytest_runtest_makereport(item, call):
                 lines.append(f'            f"[{{data[\'case_id\']}}] {{data[\'description\']}} — 預期成功"')
                 lines.append(f'        )')
             else:
-                lines.append(f'        # TODO: 加入成功驗證邏輯')
-                lines.append(f'        pass')
+                lines.append(f'        # 正向操作後頁面應正常（無 success_indicator 時驗證頁面不 crash）')
+                lines.append(f'        assert page.is_page_displayed(), (')
+                lines.append(f'            f"[{{data[\'case_id\']}}] {{data[\'description\']}} — 正向操作後頁面異常"')
+                lines.append(f'        )')
             lines.append(f'')
 
             # --- 反向測試 ---

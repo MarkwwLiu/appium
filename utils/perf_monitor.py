@@ -1,7 +1,7 @@
 """
 效能監控工具
 測試期間追蹤 App 的 CPU、記憶體、電量等指標。
-僅支援 Android（透過 adb）。
+支援 Android（透過 adb）和 iOS（透過 Appium / ideviceinfo）。
 """
 
 import subprocess
@@ -54,27 +54,38 @@ class PerfReport:
 
 class PerfMonitor:
     """
-    效能監控器 (Android)
+    效能監控器 (Android + iOS)
 
     用法：
+        # Android
         monitor = PerfMonitor("com.example.app")
+        # iOS
+        monitor = PerfMonitor("com.example.app", platform="ios", driver=driver)
+
         monitor.start(interval=2)
         # ... 執行測試 ...
         report = monitor.stop()
         print(report.summary())
     """
 
-    def __init__(self, package_name: str):
+    def __init__(self, package_name: str, platform: str = "android", driver=None):
         self.package_name = package_name
+        self.platform = platform.lower()
+        self.driver = driver  # iOS 需要 Appium driver
         self._running = False
         self._report = PerfReport()
 
     def snapshot(self) -> PerfSnapshot:
         """擷取一次效能快照"""
         snap = PerfSnapshot(timestamp=time.time())
-        snap.memory_mb = self._get_memory()
-        snap.cpu_percent = self._get_cpu()
-        snap.battery_level, snap.battery_temp = self._get_battery()
+        if self.platform == "ios":
+            snap.memory_mb = self._get_memory_ios()
+            snap.cpu_percent = self._get_cpu_ios()
+            snap.battery_level = self._get_battery_ios()
+        else:
+            snap.memory_mb = self._get_memory()
+            snap.cpu_percent = self._get_cpu()
+            snap.battery_level, snap.battery_temp = self._get_battery()
         return snap
 
     def start(self, interval: float = 2.0, duration: float = 0) -> None:
@@ -85,7 +96,10 @@ class PerfMonitor:
             interval: 取樣間隔秒數
             duration: 持續秒數（0 表示直到呼叫 stop）
         """
-        logger.info(f"開始效能監控: {self.package_name} (間隔 {interval}s)")
+        logger.info(
+            f"開始效能監控: {self.package_name} "
+            f"({self.platform}, 間隔 {interval}s)"
+        )
         self._running = True
         self._report = PerfReport()
 
@@ -115,7 +129,7 @@ class PerfMonitor:
         )
         return snap
 
-    # ── 內部方法 ──
+    # ── Android 內部方法 ──
 
     def _run_adb(self, *args) -> str:
         result = subprocess.run(
@@ -127,7 +141,7 @@ class PerfMonitor:
         return result.stdout.strip()
 
     def _get_memory(self) -> float:
-        """取得 App 記憶體用量 (MB)"""
+        """取得 App 記憶體用量 (MB) — Android"""
         try:
             output = self._run_adb("shell", "dumpsys", "meminfo", self.package_name)
             for line in output.splitlines():
@@ -141,7 +155,7 @@ class PerfMonitor:
         return 0.0
 
     def _get_cpu(self) -> float:
-        """取得 App CPU 使用率"""
+        """取得 App CPU 使用率 — Android"""
         try:
             output = self._run_adb("shell", "top", "-n", "1", "-b")
             for line in output.splitlines():
@@ -161,7 +175,7 @@ class PerfMonitor:
         return 0.0
 
     def _get_battery(self) -> tuple[int, float]:
-        """取得電量百分比和溫度"""
+        """取得電量百分比和溫度 — Android"""
         level = 0
         temp = 0.0
         try:
@@ -174,3 +188,70 @@ class PerfMonitor:
         except Exception as e:
             logger.debug(f"取得電量失敗: {e}")
         return level, temp
+
+    # ── iOS 內部方法 ──
+
+    def _get_memory_ios(self) -> float:
+        """取得 App 記憶體用量 (MB) — iOS (透過 Appium)"""
+        if not self.driver:
+            return 0.0
+        try:
+            perf_data = self.driver.execute_script(
+                "mobile: performanceData",
+                {
+                    "bundleId": self.package_name,
+                    "dataType": "memory",
+                },
+            )
+            # Appium 回傳格式: [["totalMem", "realMem", ...], [values]]
+            if perf_data and len(perf_data) >= 2:
+                headers = perf_data[0]
+                values = perf_data[1]
+                for i, h in enumerate(headers):
+                    if "realMem" in str(h) or "totalMem" in str(h):
+                        raw = str(values[i]).replace(",", "")
+                        if raw.isdigit():
+                            return int(raw) / 1024.0
+        except Exception as e:
+            logger.debug(f"取得 iOS 記憶體失敗: {e}")
+        return 0.0
+
+    def _get_cpu_ios(self) -> float:
+        """取得 App CPU 使用率 — iOS (透過 Appium)"""
+        if not self.driver:
+            return 0.0
+        try:
+            perf_data = self.driver.execute_script(
+                "mobile: performanceData",
+                {
+                    "bundleId": self.package_name,
+                    "dataType": "cpu",
+                },
+            )
+            if perf_data and len(perf_data) >= 2:
+                headers = perf_data[0]
+                values = perf_data[1]
+                for i, h in enumerate(headers):
+                    if "user" in str(h).lower() or "total" in str(h).lower():
+                        try:
+                            return float(values[i])
+                        except (ValueError, TypeError):
+                            continue
+        except Exception as e:
+            logger.debug(f"取得 iOS CPU 失敗: {e}")
+        return 0.0
+
+    def _get_battery_ios(self) -> int:
+        """取得電量百分比 — iOS (透過 Appium)"""
+        if not self.driver:
+            return 0
+        try:
+            battery = self.driver.execute_script("mobile: batteryInfo")
+            if isinstance(battery, dict):
+                level = battery.get("level", 0)
+                if isinstance(level, float):
+                    return int(level * 100)
+                return int(level)
+        except Exception as e:
+            logger.debug(f"取得 iOS 電量失敗: {e}")
+        return 0
