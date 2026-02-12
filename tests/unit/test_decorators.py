@@ -1,12 +1,14 @@
 """
 utils/decorators.py 單元測試
 
-驗證 retry_on_failure、timer、timeout 裝飾器。
+驗證 retry_on_failure、timer、timeout、android_only、ios_only 裝飾器。
 """
 
 import time
+import threading
 
 import pytest
+from unittest.mock import patch, MagicMock
 
 from utils.decorators import retry_on_failure, timer, timeout
 
@@ -120,3 +122,151 @@ class TestTimeout:
             pass
 
         assert named.__name__ == "named"
+
+
+@pytest.mark.unit
+class TestTimeoutWindows:
+    """timeout 裝飾器 Windows 分支"""
+
+    @pytest.mark.unit
+    def test_windows_within_timeout(self):
+        """Windows: 未超時時正常回傳"""
+        # sys.platform 在 wrapper 函式內部被讀取（每次呼叫時），
+        # 所以只需 patch sys.platform 就能進入 Windows 分支
+        @timeout(5)
+        def fast():
+            return "done"
+
+        with patch.object(__import__("sys"), "platform", "win32"):
+            result = fast()
+        assert result == "done"
+
+    @pytest.mark.unit
+    def test_windows_exceeds_timeout(self):
+        """Windows: 超時拋出 TimeoutError"""
+        @timeout(1)
+        def slow():
+            time.sleep(5)
+            return "late"
+
+        with patch.object(__import__("sys"), "platform", "win32"):
+            with pytest.raises(TimeoutError):
+                slow()
+
+    @pytest.mark.unit
+    def test_windows_function_raises_exception(self):
+        """Windows: 函式拋出例外時正確傳播"""
+        @timeout(5)
+        def failing():
+            raise ValueError("test error")
+
+        with patch.object(__import__("sys"), "platform", "win32"):
+            with pytest.raises(ValueError, match="test error"):
+                failing()
+
+
+@pytest.mark.unit
+class TestAndroidOnly:
+    """android_only 裝飾器"""
+
+    @pytest.mark.unit
+    def test_skips_when_not_android(self):
+        """非 Android 平台時跳過"""
+        from config.config import Config
+        original_platform = Config.PLATFORM
+        try:
+            Config.PLATFORM = "ios"
+            import importlib
+            import utils.decorators as dec_module
+            importlib.reload(dec_module)
+
+            @dec_module.android_only
+            def android_test():
+                return "android"
+
+            # android_only 使用 pytest.mark.skipif，檢查標記已套用
+            markers = list(android_test.pytestmark)
+            skip_markers = [m for m in markers if m.name == "skipif"]
+            assert len(skip_markers) > 0
+            # 條件應為 True (因為 PLATFORM != "android")
+            assert skip_markers[0].args[0] is True
+        finally:
+            Config.PLATFORM = original_platform
+            importlib.reload(dec_module)
+
+    @pytest.mark.unit
+    def test_runs_when_android(self):
+        """Android 平台時不跳過"""
+        from config.config import Config
+        original_platform = Config.PLATFORM
+        try:
+            Config.PLATFORM = "android"
+            import importlib
+            import utils.decorators as dec_module
+            importlib.reload(dec_module)
+
+            @dec_module.android_only
+            def android_test():
+                return "android"
+
+            markers = list(android_test.pytestmark)
+            skip_markers = [m for m in markers if m.name == "skipif"]
+            assert len(skip_markers) > 0
+            # 條件應為 False (因為 PLATFORM == "android")
+            assert skip_markers[0].args[0] is False
+        finally:
+            Config.PLATFORM = original_platform
+            importlib.reload(dec_module)
+
+
+@pytest.mark.unit
+class TestIosOnly:
+    """ios_only 裝飾器"""
+
+    @pytest.mark.unit
+    def test_skips_when_not_ios(self):
+        """非 iOS 平台時跳過"""
+        from config.config import Config
+        original_platform = Config.PLATFORM
+        try:
+            Config.PLATFORM = "android"
+            import importlib
+            import utils.decorators as dec_module
+            importlib.reload(dec_module)
+
+            @dec_module.ios_only
+            def ios_test():
+                return "ios"
+
+            markers = list(ios_test.pytestmark)
+            skip_markers = [m for m in markers if m.name == "skipif"]
+            assert len(skip_markers) > 0
+            # 條件應為 True (因為 PLATFORM != "ios")
+            assert skip_markers[0].args[0] is True
+        finally:
+            Config.PLATFORM = original_platform
+            importlib.reload(dec_module)
+
+    @pytest.mark.unit
+    def test_runs_when_ios(self):
+        """iOS 平台時不跳過"""
+        from config.config import Config
+        original_platform = Config.PLATFORM
+        try:
+            Config.PLATFORM = "ios"
+            import importlib
+            import utils.decorators as dec_module
+            importlib.reload(dec_module)
+
+            @dec_module.ios_only
+            def ios_test():
+                return "ios"
+
+            markers = list(ios_test.pytestmark)
+            skip_markers = [m for m in markers if m.name == "skipif"]
+            assert len(skip_markers) > 0
+            # 條件應為 False (因為 PLATFORM == "ios")
+            assert skip_markers[0].args[0] is False
+        finally:
+            Config.PLATFORM = original_platform
+            importlib.reload(dec_module)

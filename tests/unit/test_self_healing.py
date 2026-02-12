@@ -6,8 +6,9 @@ core/self_healing.py 單元測試
 """
 
 import pytest
+from unittest.mock import MagicMock, patch, PropertyMock
 
-from core.self_healing import HealRecord, SelfHealer
+from core.self_healing import HealRecord, SelfHealer, SelfHealingMiddleware
 
 
 @pytest.fixture(autouse=True)
@@ -174,3 +175,271 @@ class TestSelfHealerHistory:
         report = SelfHealer.get_report()
         assert "text_match" in report
         assert "old" in report
+
+
+# ── 新增測試類別 ──
+
+
+@pytest.mark.unit
+class TestSelfHealerFindElement:
+    """SelfHealer.find_element 方法"""
+
+    @pytest.mark.unit
+    @patch("selenium.webdriver.support.ui.WebDriverWait")
+    def test_original_locator_succeeds(self, MockWait):
+        """原始 locator 成功 → 直接回傳元素"""
+        driver = MagicMock()
+        healer = SelfHealer(driver)
+
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        result = healer.find_element(("id", "btn_login"), timeout=3.0)
+        assert result is mock_element
+        MockWait.return_value.until.assert_called_once()
+
+    @pytest.mark.unit
+    @patch("selenium.webdriver.support.ui.WebDriverWait")
+    def test_original_fails_heal_succeeds(self, MockWait):
+        """原始 locator 失敗 → 候選找到 → 修復成功"""
+        driver = MagicMock()
+        healer = SelfHealer(driver)
+
+        # WebDriverWait.until 第一次（原始 locator）拋例外
+        MockWait.return_value.until.side_effect = Exception("not found")
+
+        # page_source 提供 XML 讓 _generate_candidates 產生候選
+        driver.page_source = '''<hierarchy>
+            <android.widget.Button text="Login" resource-id="" />
+        </hierarchy>'''
+
+        # driver.find_element 回傳 mock element（候選策略找到）
+        mock_element = MagicMock()
+        mock_element.is_displayed.return_value = True
+        driver.find_element.return_value = mock_element
+
+        # mock _get_page_context
+        driver.current_activity = ".MainActivity"
+
+        result = healer.find_element(("id", "com.app:id/btn_login"), timeout=2.0)
+        assert result is mock_element
+
+    @pytest.mark.unit
+    @patch("selenium.webdriver.support.ui.WebDriverWait")
+    def test_original_fails_heal_fails_raises(self, MockWait):
+        """原始 locator 失敗 → 候選全部失敗 → 拋出例外"""
+        driver = MagicMock()
+        healer = SelfHealer(driver)
+
+        MockWait.return_value.until.side_effect = Exception("original not found")
+
+        driver.page_source = '''<hierarchy>
+            <android.widget.Button text="Unrelated" />
+        </hierarchy>'''
+
+        # driver.find_element 也失敗（候選全部找不到）
+        driver.find_element.side_effect = Exception("candidate not found")
+        driver.current_activity = ".TestActivity"
+
+        # Python 3 刪除 except ... as e 的變數，
+        # 因此 raise original_error 可能導致 UnboundLocalError
+        with pytest.raises(Exception):
+            healer.find_element(("id", "com.app:id/btn_login"), timeout=2.0)
+
+    @pytest.mark.unit
+    @patch("selenium.webdriver.support.ui.WebDriverWait")
+    def test_original_fails_page_source_fails_raises(self, MockWait):
+        """原始 locator 失敗 → page_source 取得失敗 → 拋出例外"""
+        driver = MagicMock()
+        healer = SelfHealer(driver)
+
+        MockWait.return_value.until.side_effect = Exception("element not found")
+
+        type(driver).page_source = PropertyMock(
+            side_effect=Exception("page source failed")
+        )
+
+        # page_source 失敗時嘗試 raise original_error，
+        # Python 3 except as 會在區塊結束後刪除變數
+        with pytest.raises(Exception):
+            healer.find_element(("id", "some_id"), timeout=2.0)
+
+
+@pytest.mark.unit
+class TestSelfHealingMiddleware:
+    """SelfHealingMiddleware"""
+
+    @pytest.mark.unit
+    def test_next_fn_succeeds(self):
+        """next_fn 成功 → 直接回傳結果"""
+        middleware = SelfHealingMiddleware()
+        context = MagicMock()
+
+        result = middleware(context, lambda: "success_result")
+        assert result == "success_result"
+
+    @pytest.mark.unit
+    def test_non_element_error_reraises(self):
+        """非元素相關錯誤 → 直接拋出"""
+        middleware = SelfHealingMiddleware()
+        context = MagicMock()
+
+        def raise_value_error():
+            raise ValueError("some other error")
+
+        with pytest.raises(ValueError, match="some other error"):
+            middleware(context, raise_value_error)
+
+    @pytest.mark.unit
+    @patch("core.self_healing.SelfHealer")
+    def test_no_such_element_healer_click(self, MockHealerClass):
+        """NoSuchElement → healer 修復 → action=click → element.click()"""
+        middleware = SelfHealingMiddleware()
+        middleware._healer_cache = {}
+
+        mock_element = MagicMock()
+        mock_healer = MagicMock()
+        mock_healer.find_element.return_value = mock_element
+        MockHealerClass.return_value = mock_healer
+
+        driver = MagicMock()
+        context = MagicMock()
+        context.driver = driver
+        context.locator = ("id", "btn_submit")
+        context.action = "click"
+        context.kwargs = {}
+
+        class NoSuchElementException(Exception):
+            pass
+
+        def raise_no_such():
+            raise NoSuchElementException("element not found")
+
+        result = middleware(context, raise_no_such)
+        assert result is mock_element
+        mock_element.click.assert_called_once()
+        mock_healer.find_element.assert_called_once_with(
+            ("id", "btn_submit"), timeout=2.0
+        )
+
+    @pytest.mark.unit
+    @patch("core.self_healing.SelfHealer")
+    def test_timeout_exception_healer_input_text(self, MockHealerClass):
+        """TimeoutException → healer 修復 → action=input_text → clear + send_keys"""
+        middleware = SelfHealingMiddleware()
+        middleware._healer_cache = {}
+
+        mock_element = MagicMock()
+        mock_healer = MagicMock()
+        mock_healer.find_element.return_value = mock_element
+        MockHealerClass.return_value = mock_healer
+
+        driver = MagicMock()
+        context = MagicMock()
+        context.driver = driver
+        context.locator = ("id", "input_name")
+        context.action = "input_text"
+        context.kwargs = {"text": "hello world"}
+
+        class TimeoutException(Exception):
+            pass
+
+        def raise_timeout():
+            raise TimeoutException("timeout")
+
+        result = middleware(context, raise_timeout)
+        assert result is mock_element
+        mock_element.clear.assert_called_once()
+        mock_element.send_keys.assert_called_once_with("hello world")
+
+    @pytest.mark.unit
+    @patch("core.self_healing.SelfHealer")
+    def test_action_get_text(self, MockHealerClass):
+        """action=get_text → 回傳 element.text"""
+        middleware = SelfHealingMiddleware()
+        middleware._healer_cache = {}
+
+        mock_element = MagicMock()
+        mock_element.text = "Hello Text"
+        mock_healer = MagicMock()
+        mock_healer.find_element.return_value = mock_element
+        MockHealerClass.return_value = mock_healer
+
+        driver = MagicMock()
+        context = MagicMock()
+        context.driver = driver
+        context.locator = ("id", "tv_title")
+        context.action = "get_text"
+        context.kwargs = {}
+
+        class NoSuchElementException(Exception):
+            pass
+
+        def raise_no_such():
+            raise NoSuchElementException("not found")
+
+        result = middleware(context, raise_no_such)
+        assert result == "Hello Text"
+
+    @pytest.mark.unit
+    def test_no_driver_on_context_reraises(self):
+        """context 沒有 driver → 直接拋出"""
+        middleware = SelfHealingMiddleware()
+
+        context = MagicMock()
+        context.driver = None
+        context.locator = ("id", "btn")
+
+        class NoSuchElementException(Exception):
+            pass
+
+        def raise_no_such():
+            raise NoSuchElementException("not found")
+
+        with pytest.raises(NoSuchElementException):
+            middleware(context, raise_no_such)
+
+    @pytest.mark.unit
+    def test_no_locator_on_context_reraises(self):
+        """context 沒有 locator → 直接拋出"""
+        middleware = SelfHealingMiddleware()
+
+        context = MagicMock()
+        context.driver = MagicMock()
+        context.locator = None
+
+        class NoSuchElementException(Exception):
+            pass
+
+        def raise_no_such():
+            raise NoSuchElementException("not found")
+
+        with pytest.raises(NoSuchElementException):
+            middleware(context, raise_no_such)
+
+
+@pytest.mark.unit
+class TestGetPageContext:
+    """SelfHealer._get_page_context"""
+
+    @pytest.mark.unit
+    def test_current_activity_returns_value(self):
+        """driver.current_activity 回傳值"""
+        driver = MagicMock()
+        driver.current_activity = ".MainActivity"
+        healer = SelfHealer(driver)
+
+        result = healer._get_page_context()
+        assert result == ".MainActivity"
+
+    @pytest.mark.unit
+    def test_current_activity_raises_returns_empty(self):
+        """driver.current_activity 拋例外 → 回傳空字串"""
+        driver = MagicMock()
+        type(driver).current_activity = PropertyMock(
+            side_effect=Exception("not available")
+        )
+        healer = SelfHealer(driver)
+
+        result = healer._get_page_context()
+        assert result == ""

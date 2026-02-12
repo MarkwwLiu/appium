@@ -5,7 +5,7 @@ core/component.py 單元測試
 不依賴真實 driver，使用 mock。
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -110,3 +110,158 @@ class TestComponentDescriptor:
 
         instance = descriptor.__get__(page)
         assert instance.root_locator == root
+
+
+# ── 新增測試類別 ──
+
+
+@pytest.mark.unit
+class TestComponentRoot:
+    """Component.root 屬性"""
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_root_with_root_locator_finds_element(self, MockWait):
+        """有 root_locator → WebDriverWait 找到元素"""
+        driver = MagicMock()
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        comp = FakeComponent(driver, root_locator=("id", "container"))
+        result = comp.root
+
+        assert result is mock_element
+        MockWait.assert_called_once_with(driver, 10)
+        MockWait.return_value.until.assert_called_once()
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_root_with_root_locator_wait_raises(self, MockWait):
+        """有 root_locator → WebDriverWait 拋例外 → _root_element 為 None"""
+        driver = MagicMock()
+        MockWait.return_value.until.side_effect = Exception("timeout")
+
+        comp = FakeComponent(driver, root_locator=("id", "missing"))
+        result = comp.root
+
+        assert result is None
+        assert comp._root_element is None
+
+    @pytest.mark.unit
+    def test_root_without_root_locator(self):
+        """無 root_locator → 回傳 None"""
+        driver = MagicMock()
+        comp = FakeComponent(driver)
+        result = comp.root
+
+        assert result is None
+
+
+@pytest.mark.unit
+class TestComponentOperations:
+    """Component 元素操作"""
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_find_element(self, MockWait):
+        """find_element → 呼叫 WebDriverWait.until"""
+        driver = MagicMock()
+        comp = FakeComponent(driver, timeout=5)
+
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        result = comp.find_element(("id", "btn"))
+        assert result is mock_element
+        MockWait.assert_called_once_with(driver, 5)
+        MockWait.return_value.until.assert_called_once()
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_find_elements(self, MockWait):
+        """find_elements → 先等第一個出現再呼叫 driver.find_elements"""
+        driver = MagicMock()
+        comp = FakeComponent(driver, timeout=5)
+
+        mock_first = MagicMock()
+        MockWait.return_value.until.return_value = mock_first
+
+        mock_list = [MagicMock(), MagicMock()]
+        driver.find_elements.return_value = mock_list
+
+        result = comp.find_elements(("id", "items"))
+        assert result is mock_list
+        # 先呼叫 WebDriverWait.until（等第一個元素）
+        MockWait.return_value.until.assert_called_once()
+        # 再呼叫 driver.find_elements
+        driver.find_elements.assert_called_once_with("id", "items")
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_click(self, MockWait):
+        """click → WebDriverWait.until(clickable).click()"""
+        driver = MagicMock()
+        comp = FakeComponent(driver, timeout=5)
+
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        comp.click(("id", "btn_ok"))
+        MockWait.assert_called_once_with(driver, 5)
+        MockWait.return_value.until.assert_called_once()
+        mock_element.click.assert_called_once()
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_input_text(self, MockWait):
+        """input_text → WebDriverWait.until(visible) → clear + send_keys"""
+        driver = MagicMock()
+        comp = FakeComponent(driver, timeout=5)
+
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        comp.input_text(("id", "input_name"), "Hello World")
+        MockWait.assert_called_once_with(driver, 5)
+        MockWait.return_value.until.assert_called_once()
+        mock_element.clear.assert_called_once()
+        mock_element.send_keys.assert_called_once_with("Hello World")
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_get_text(self, MockWait):
+        """get_text → find_element.text"""
+        driver = MagicMock()
+        comp = FakeComponent(driver, timeout=5)
+
+        mock_element = MagicMock()
+        mock_element.text = "Some Text"
+        MockWait.return_value.until.return_value = mock_element
+
+        result = comp.get_text(("id", "tv_label"))
+        assert result == "Some Text"
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_is_displayed_true(self, MockWait):
+        """is_displayed → 元素找到 → True"""
+        driver = MagicMock()
+        comp = FakeComponent(driver)
+
+        mock_element = MagicMock()
+        MockWait.return_value.until.return_value = mock_element
+
+        result = comp.is_displayed(("id", "visible_btn"), timeout=3)
+        assert result is True
+
+    @pytest.mark.unit
+    @patch("core.component.WebDriverWait")
+    def test_is_displayed_false_on_exception(self, MockWait):
+        """is_displayed → 拋例外 → False"""
+        driver = MagicMock()
+        comp = FakeComponent(driver)
+
+        MockWait.return_value.until.side_effect = Exception("timeout")
+
+        result = comp.is_displayed(("id", "hidden_btn"), timeout=3)
+        assert result is False
