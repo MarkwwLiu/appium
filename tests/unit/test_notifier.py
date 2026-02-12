@@ -264,10 +264,10 @@ class TestPytestTerminalSummary:
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
 
+        import time as time_module
         with patch("utils.notifier.os.getenv", return_value="https://hooks.slack.com/test"), \
              patch("utils.notifier.urlopen", return_value=mock_response), \
-             patch("utils.notifier.time") as mock_time:
-            mock_time.time.return_value = 1010.0
+             patch.object(time_module, "time", return_value=1010.0):
             pytest_terminal_summary(mock_reporter, 1, mock_config)
 
     @pytest.mark.unit
@@ -287,8 +287,8 @@ class TestPytestTerminalSummary:
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
 
+        import time as time_module
         with patch("utils.notifier.os.getenv", return_value="https://hooks.slack.com/test"), \
              patch("utils.notifier.urlopen", return_value=mock_response), \
-             patch("utils.notifier.time") as mock_time:
-            mock_time.time.return_value = 1005.0
+             patch.object(time_module, "time", return_value=1005.0):
             pytest_terminal_summary(mock_reporter, 0, mock_config)

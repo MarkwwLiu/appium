@@ -625,3 +625,326 @@ class TestNetworkMockUrl:
 
         mock = NetworkMock()
         assert mock.port == 0
+
+
+@pytest.mark.unit
+class TestNetworkMockServerLifecycle:
+    """NetworkMock server 啟動/停止與 HTTP 請求處理"""
+
+    @pytest.mark.unit
+    def test_start_returns_url(self):
+        """start() 回傳 base URL"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        try:
+            url = mock.start()
+            assert url.startswith("http://")
+            assert mock.port > 0
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_start_idempotent(self):
+        """重複呼叫 start() 回傳相同 URL"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        try:
+            url1 = mock.start()
+            url2 = mock.start()
+            assert url1 == url2
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_stop_clears_server(self):
+        """stop() 後 server 被清除"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.start()
+        mock.stop()
+
+        assert mock._server is None
+        assert mock._thread is None
+        assert mock.url == ""
+        assert mock.port == 0
+
+    @pytest.mark.unit
+    def test_stop_without_start(self):
+        """未啟動時呼叫 stop() 不報錯"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock()
+        mock.stop()  # 不應拋出例外
+
+    @pytest.mark.unit
+    def test_url_property_with_server(self):
+        """server 啟動後 url 包含 IP 和 port"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        try:
+            mock.start()
+            url = mock.url
+            assert "http://" in url
+            port = mock.port
+            assert port > 0
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_matched_rule_returns_response(self):
+        """匹配規則時回傳設定的回應"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/users", body={"users": ["alice", "bob"]}, status=200)
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/users")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                assert resp.status == 200
+                assert data == {"users": ["alice", "bob"]}
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_unmatched_returns_404(self):
+        """無匹配規則時回傳 404"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/nonexistent")
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                assert False, "應該拋出 HTTPError"
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_post_request_recorded_in_history(self):
+        """POST 請求被記錄到 history"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/data", method="POST", status=201, body={"ok": True})
+        try:
+            mock.start()
+            port = mock.port
+
+            body = json.dumps({"key": "value"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/data",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 201
+
+            # 等待 history 被記錄
+            time.sleep(0.1)
+            assert len(mock.history) == 1
+            assert mock.history[0]["method"] == "POST"
+            assert mock.history[0]["path"] == "/api/data"
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_error_rule_returns_500(self):
+        """mock_error 規則回傳指定錯誤碼"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock_error("/api/fail", status=500)
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/fail")
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                assert False, "應該拋出 HTTPError"
+            except urllib.error.HTTPError as e:
+                assert e.code == 500
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_empty_response_rule(self):
+        """mock_empty 規則回傳空列表"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock_empty("/api/items")
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/items")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data == []
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_custom_headers_in_response(self):
+        """自訂 headers 出現在回應中"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/test", body={"ok": True}, headers={"X-Custom": "hello"})
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/test")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.headers.get("X-Custom") == "hello"
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_string_body_response(self):
+        """字串 body 原樣回傳"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/text", body="plain text response")
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/text")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                text = resp.read().decode("utf-8")
+                assert text == "plain text response"
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_later_rule_takes_priority(self):
+        """後加的規則優先匹配"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/test", body={"version": 1})
+        mock.mock("/api/test", body={"version": 2})
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/test")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data == {"version": 2}
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_context_manager_starts_and_stops_server(self):
+        """context manager 自動啟動和停止 server"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/hello", body={"msg": "hi"})
+
+        with mock as m:
+            port = m.port
+            assert port > 0
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/hello")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data == {"msg": "hi"}
+
+        # server 已停止
+        assert mock._server is None
+
+    @pytest.mark.unit
+    def test_put_and_delete_methods(self):
+        """PUT 和 DELETE 方法正確處理"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/item", method="PUT", status=200, body={"updated": True})
+        mock.mock("/api/item", method="DELETE", status=204)
+        try:
+            mock.start()
+            port = mock.port
+
+            # PUT request
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/item",
+                data=b'{"name":"new"}',
+                method="PUT",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+
+            # DELETE request
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/item",
+                method="DELETE",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 204
+
+            time.sleep(0.1)
+            assert len(mock.history) == 2
+        finally:
+            mock.stop()
+
+    @pytest.mark.unit
+    def test_get_local_ip(self):
+        """_get_local_ip 回傳 IP 字串"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock()
+        ip = mock._get_local_ip()
+        assert isinstance(ip, str)
+        assert len(ip) > 0
+
+    @pytest.mark.unit
+    def test_get_local_ip_fallback_on_error(self):
+        """_get_local_ip 失敗時回傳 127.0.0.1"""
+        from utils.network_mock import NetworkMock
+        import socket
+
+        mock = NetworkMock()
+
+        with patch("utils.network_mock.socket.socket") as mock_socket:
+            mock_socket.return_value.connect.side_effect = OSError("no network")
+            ip = mock._get_local_ip()
+            assert ip == "127.0.0.1"
+
+    @pytest.mark.unit
+    def test_null_body_no_content(self):
+        """body 為 None 時不回傳 body 內容"""
+        from utils.network_mock import NetworkMock
+
+        mock = NetworkMock(host="127.0.0.1", port=0)
+        mock.mock("/api/empty", body=None, status=200)
+        try:
+            mock.start()
+            port = mock.port
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/empty")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+                data = resp.read()
+                assert data == b""
+        finally:
+            mock.stop()
