@@ -405,7 +405,7 @@ class SessionRunner:
             if snap.success_indicator:
                 code += f'        assert p.is_success(), f"[{{d[\'case_id\']}}] {{d[\'description\']}}"\n'
             else:
-                code += f'        pass  # TODO: 驗證成功\n'
+                code += f'        assert p.is_page_displayed(), f"[{{d[\'case_id\']}}] 正向操作後頁面異常"\n'
 
             # 反向
             code += textwrap.dedent(f'''

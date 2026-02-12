@@ -13,11 +13,18 @@ CLI 入口
 
     # 範例：產生範例 JSON 設定檔
     python -m generator --example > app_spec.json
+
+    # 匯出測試案例為獨立拋棄式腳本
+    python -m generator --export tests/test_login.py --output ./exported
+
+    # 僅分析依賴（不匯出）
+    python -m generator --export tests/test_login.py --analyze
 """
 
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from generator.engine import GeneratorEngine
 from generator.interactive import collect_app_spec, load_from_json
@@ -173,9 +180,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 範例:
-  python -m generator                        # 互動模式
-  python -m generator --spec app_spec.json   # 從設定檔
-  python -m generator --example              # 印出範例 JSON
+  python -m generator                                        # 互動模式
+  python -m generator --spec app_spec.json                   # 從設定檔
+  python -m generator --example                              # 印出範例 JSON
+  python -m generator --export tests/test_login.py           # 匯出為獨立腳本
+  python -m generator --export tests/test_login.py --analyze # 僅分析依賴
 """,
     )
     parser.add_argument(
@@ -188,8 +197,30 @@ def main():
         "--example", action="store_true",
         help="印出範例 JSON 設定檔",
     )
+    parser.add_argument(
+        "--export",
+        help="匯出指定測試檔案為獨立拋棄式腳本（例: tests/test_login.py）",
+    )
+    parser.add_argument(
+        "--analyze", action="store_true",
+        help="搭配 --export 使用，僅分析依賴不匯出",
+    )
 
     args = parser.parse_args()
+
+    # 匯出模式
+    if args.export:
+        from generator.exporter import TestExporter
+        exporter = TestExporter(args.export)
+
+        if args.analyze:
+            result = exporter.analyze()
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return
+
+        output = args.output or f"./exported_{Path(args.export).stem}"
+        exporter.export(output)
+        return
 
     # 印範例
     if args.example:

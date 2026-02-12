@@ -247,6 +247,56 @@ def monkey(driver):
     return MonkeyTester(driver)
 
 
+# ── 效能監控 Fixtures ──
+
+@pytest.fixture
+def perf_monitor(driver, platform):
+    """效能監控 fixture（Android + iOS）"""
+    from utils.perf_monitor import PerfMonitor
+    bundle_or_package = driver.capabilities.get(
+        "appPackage",
+        driver.capabilities.get("bundleId", ""),
+    )
+    return PerfMonitor(bundle_or_package, platform=platform, driver=driver)
+
+
+# ── 測試資料清理 ──
+
+@pytest.fixture
+def test_cleanup():
+    """
+    測試資料清理 fixture。
+
+    提供 register() 方法註冊清理函式，測試結束後自動執行。
+
+    用法：
+        def test_create_user(driver, api_client, test_cleanup):
+            user = api_client.post("/users", json={"name": "test"})
+            test_cleanup.register(lambda: api_client.delete(f"/users/{user['id']}"))
+            # ... 測試邏輯 ...
+    """
+    class _Cleanup:
+        def __init__(self):
+            self._tasks: list = []
+
+        def register(self, fn, *args, **kwargs):
+            """註冊清理函式，測試結束時自動執行"""
+            self._tasks.append((fn, args, kwargs))
+
+        def execute(self):
+            """執行所有清理（逆序，最後註冊的先執行）"""
+            for fn, args, kwargs in reversed(self._tasks):
+                try:
+                    fn(*args, **kwargs)
+                except Exception as e:
+                    logger.warning(f"[Cleanup] 清理失敗: {e}")
+            self._tasks.clear()
+
+    cleanup = _Cleanup()
+    yield cleanup
+    cleanup.execute()
+
+
 # ── 頁面驗證 / Recovery Fixtures ──
 
 @pytest.fixture

@@ -21,6 +21,9 @@ venv/
 # 測試輸出
 reports/*.log
 reports/*.html
+reports/*.db
+reports/*.json.log
+reports/coverage_html/
 screenshots/*.png
 
 # OS
